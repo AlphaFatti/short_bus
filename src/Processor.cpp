@@ -9,6 +9,8 @@ using namespace juce;
 namespace
 {
 using Layout = AudioProcessorValueTreeState::ParameterLayout;
+// Include rounding at the default limiter ceiling.
+const auto brakeThreshold = dsp::gainFromDb(-1.0f) - 1.0e-6f;
 
 void addFloat(Layout& layout, String id, String title, NormalisableRange<float> range, float initial)
 {
@@ -164,6 +166,8 @@ void Processor::prepareToPlay(double rate, int)
     meterRate.store(static_cast<float>(rate), std::memory_order_relaxed);
     inputPeak.store(0.0f, std::memory_order_relaxed);
     outputPeak.store(0.0f, std::memory_order_relaxed);
+    hostBypassed.store(false, std::memory_order_relaxed);
+    outputPeakPending.store(false, std::memory_order_relaxed);
     for (auto& meter : stageMeters)
     {
         meter.inputPeak.store(0.0f, std::memory_order_relaxed);
@@ -192,6 +196,7 @@ void Processor::processBlockBypassed(AudioBuffer<float>& audio, MidiBuffer&)
 void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
 {
     ScopedNoDenormals noDenormals;
+    hostBypassed.store(hostBypass, std::memory_order_relaxed);
     const auto frames = audio.getNumSamples();
     if (frames == 0 || audio.getNumChannels() == 0)
         return;
@@ -227,6 +232,8 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     };
     updatePeak(inputPeak, in);
     updatePeak(outputPeak, out);
+    if (settings.bypass || out >= brakeThreshold)
+        outputPeakPending.store(!settings.bypass, std::memory_order_relaxed);
     const auto metering = rack.meters();
     for (std::size_t i = 0; i < stageMeters.size(); ++i)
     {
@@ -256,6 +263,11 @@ dsp::Metering Processor::readMeters() const
 std::array<float, 2> Processor::readPeaks() const
 {
     return { read(&inputPeak), read(&outputPeak) };
+}
+
+bool Processor::isBypassed() const
+{
+    return read(bypass) > 0.5f || hostBypassed.load(std::memory_order_relaxed);
 }
 
 bool Processor::readSpectrum(float* left, float* right)
