@@ -102,6 +102,49 @@ void movableBands()
     }
 }
 
+void nonOverlappingBands()
+{
+    const auto defaults = orderedBandSpans(bandDefaults, 48000.0f);
+    for (std::size_t i = 0; i < defaults.size(); ++i)
+    {
+        check(defaults[i].low == bandDefaults[i].lowHz, "default band start preserved");
+        check(defaults[i].high == bandDefaults[i].highHz, "default band end preserved");
+    }
+
+    auto overlapping = bandDefaults;
+    overlapping[1].lowHz = 101.0f;
+    overlapping[1].highHz = 352.0f;
+    const auto restored = orderedBandSpans(overlapping, 48000.0f);
+    check(restored[0].high < restored[1].low, "band gaps allowed");
+    check(restored[1].high == restored[2].low && restored[1].high == 350.0f, "old overlap trimmed at the next start");
+
+    auto crossing = bandDefaults;
+    for (std::size_t i = 0; i < crossing.size(); ++i)
+    {
+        crossing[i].lowHz = i % 2 == 0 ? maxHz : minHz;
+        crossing[i].highHz = i % 2 == 0 ? minHz : maxHz;
+    }
+    for (auto rate : { 8000.0f, 44100.0f, 48000.0f, 96000.0f })
+    {
+        const auto spans = orderedBandSpans(crossing, rate);
+        auto previousHigh = minHz;
+        for (const auto span : spans)
+        {
+            check(span.low >= previousHigh, "host edge values cannot overlap");
+            check(span.high >= span.low * edgeRatio, "minimum band width kept");
+            check(span.high <= static_cast<float>(bandCeilingHz(rate)), "band limited to current sample rate");
+            previousHigh = span.high;
+        }
+    }
+
+    check(constrainBandFrequency(defaults, 1, BandEdge::low, 40.0f, 48000.0f) == 100.0f,
+        "low edge stops at previous band");
+    check(constrainBandFrequency(defaults, 1, BandEdge::high, 400.0f, 48000.0f) == 350.0f,
+        "high edge stops at next band");
+    check(constrainBandFrequency(defaults, 1, BandEdge::high, 40.0f, 48000.0f) == 112.0f,
+        "high edge respects its own minimum width");
+}
+
 void fixedLatency()
 {
     Rack rack;
@@ -196,6 +239,7 @@ int main()
 {
     dynamicsCurves();
     movableBands();
+    nonOverlappingBands();
     fixedLatency();
     peakCeiling();
     liveReorder();

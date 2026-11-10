@@ -19,7 +19,9 @@ constexpr int bandCount = 5;
 constexpr int orderCount = 24;
 constexpr float minHz = 20.0f;
 constexpr float maxHz = 20000.0f;
-constexpr float edgeRatio = 1.12f;
+constexpr int edgeWidthNumerator = 28;
+constexpr int edgeWidthDenominator = 25;
+constexpr float edgeRatio = static_cast<float>(edgeWidthNumerator) / edgeWidthDenominator;
 constexpr float lookaheadMs = 3.0f;
 
 using Order = std::array<Stage, stageCount>;
@@ -118,12 +120,87 @@ struct Settings
 
 struct Edges { float low; float high; };
 
+using BandSpans = std::array<Edges, bandCount>;
+enum class BandEdge { low, high };
+
+constexpr int minimumHighHz(int low)
+{
+    return (low * edgeWidthNumerator + edgeWidthDenominator - 1) / edgeWidthDenominator;
+}
+
+constexpr int maximumLowHz(int high)
+{
+    return high * edgeWidthDenominator / edgeWidthNumerator;
+}
+
+inline int bandCeilingHz(float rate)
+{
+    constexpr auto minimumCeiling = []
+    {
+        int hz = static_cast<int>(minHz);
+        for (int i = 0; i < bandCount; ++i)
+            hz = minimumHighHz(hz);
+        return hz;
+    }();
+    const auto nyquistLimit = std::isfinite(rate) ? rate * 0.45f : maxHz;
+    return static_cast<int>(std::clamp(nyquistLimit, static_cast<float>(minimumCeiling), maxHz));
+}
+
 inline Edges effectiveEdges(float low, float high, float rate)
 {
-    const auto upper = std::clamp(rate * 0.45f, minHz * edgeRatio, maxHz);
+    const auto upper = static_cast<float>(bandCeilingHz(rate));
     low = std::clamp(low, minHz, upper / edgeRatio);
     high = std::clamp(high, std::min(upper, low * edgeRatio), upper);
     return { low, high };
+}
+
+inline int wholeHz(float requested, float fallback)
+{
+    const auto hz = std::isfinite(requested) ? requested : fallback;
+    return static_cast<int>(std::round(std::clamp(hz, minHz, maxHz)));
+}
+
+inline BandSpans orderedBandSpans(const std::array<BandSettings, bandCount>& requested, float rate)
+{
+    const auto ceiling = bandCeilingHz(rate);
+    std::array<int, bandCount> highestLow {};
+    auto available = ceiling;
+    for (auto i = highestLow.rbegin(); i != highestLow.rend(); ++i)
+    {
+        available = maximumLowHz(available);
+        *i = available;
+    }
+
+    // Keep the requested starts where possible, then trim ends at the following start.
+    BandSpans spans {};
+    auto lowestLow = static_cast<int>(minHz);
+    for (std::size_t i = 0; i < spans.size(); ++i)
+    {
+        const auto low = std::clamp(wholeHz(requested[i].lowHz, bandDefaults[i].lowHz), lowestLow, highestLow[i]);
+        spans[i].low = static_cast<float>(low);
+        lowestLow = minimumHighHz(low);
+    }
+    for (std::size_t i = 0; i < spans.size(); ++i)
+    {
+        const auto highLimit = i + 1 < spans.size() ? static_cast<int>(spans[i + 1].low) : ceiling;
+        const auto minHigh = minimumHighHz(static_cast<int>(spans[i].low));
+        spans[i].high = static_cast<float>(std::clamp(wholeHz(requested[i].highHz, bandDefaults[i].highHz), minHigh, highLimit));
+    }
+    return spans;
+}
+
+inline float constrainBandFrequency(const BandSpans& spans, std::size_t band, BandEdge edge, float requested, float rate)
+{
+    const auto span = spans[band];
+    if (edge == BandEdge::low)
+    {
+        const auto left = band > 0 ? static_cast<int>(spans[band - 1].high) : static_cast<int>(minHz);
+        const auto right = maximumLowHz(static_cast<int>(span.high));
+        return static_cast<float>(std::clamp(wholeHz(requested, span.low), left, right));
+    }
+    const auto left = minimumHighHz(static_cast<int>(span.low));
+    const auto right = band + 1 < spans.size() ? static_cast<int>(spans[band + 1].low) : bandCeilingHz(rate);
+    return static_cast<float>(std::clamp(wholeHz(requested, span.high), left, right));
 }
 
 struct Metering

@@ -5,15 +5,17 @@ Short Bus is a free, open-source VST3 dynamics rack for a stereo mix bus. It put
 | Stage | Controls |
 | --- | --- |
 | Expand / Lift | Downward expansion or upward compression below threshold, with a cap on the cut or lift |
-| 5-Band | Five independently enabled, movable compression bands with threshold, ratio, attack, release, knee and maximum cut |
+| 5-Band | Five independently enabled compression bands with adjustable edges with threshold, ratio, attack, release, knee and maximum cut |
 | Compressor | Stereo-linked broadband compression with knee, range and makeup gain |
 | Limiter | Stereo-linked sample-peak limiting with 3 ms lookahead, drive, ceiling and release |
 
-Select a stage card to edit its controls and use the **Move** arrows to change the signal order. Click **Stage on** to engage that stage. The analyzer shows the stereo output of the whole rack. The band meters report the requested gain change. The filters have gradual skirts, so a narrow band can apply less cut at its center and overlapping bands can combine their cuts.
+Select a stage card to edit its controls and use the **Move** arrows to change the signal order. Click **Stage on** to engage that stage. The analyzer shows the stereo output of the whole rack. The band meters report the requested gain change. The filters have gradual skirts, so a narrow band can apply less cut at its center.
 
-Drag the threshold left or right in **Expand / Lift** and **Compressor**, or drag the ceiling up or down in **Limiter**. In **5-Band**, drag a node horizontally to move the band while keeping its width, or vertically to set its threshold. Grab either edge of the selected band to resize it. The sliders also accept typed values.
+Drag the threshold left or right in **Expand / Lift** and **Compressor**. Below threshold, a vertical drag adjusts **Range** in Expand / Lift or **Makeup** in Compressor. Above the compressor threshold, drag down for a higher ratio or up for a lower one. In **Limiter**, drag the ceiling up or down.
 
-The default order is Expand / Lift → 5-Band → Compressor → Limiter. Every stage starts off. Global **Bypass** preserves the plugin's delay so you can A/B without a timing jump. The two red roof lamps flash alternately while bypass is on. The limiter ceiling is measured at its own output in dBFS. For a ceiling on the final output, keep it at the end of the rack and leave downstream gain at unity. Its sample-peak detector measures discrete samples. The plugin reports approximately 3 ms of latency to the host in every order.
+In **5-Band**, drag a node up or down to set its threshold and use either edge handle to resize the selected band. The frequency sliders and typed values obey the same limits. Bands can meet at a boundary or leave gaps. Previously overlapping spans are trimmed at the neighboring band start.
+
+The default order is Expand / Lift → 5-Band → Compressor → Limiter. Every stage starts off. Global **Bypass** preserves the plugin's delay so you can A/B without a timing jump. The two red roof lamps alternate while bypass is on, warming up and fading out like incandescent bulbs. The limiter ceiling is measured at its own output in dBFS. For a ceiling on the final output, keep it at the end of the rack and leave downstream gain at unity. Its sample-peak detector measures discrete samples. The plugin reports approximately 3 ms of latency to the host in every order.
 
 ## Install in OBS 33 on Windows 11
 

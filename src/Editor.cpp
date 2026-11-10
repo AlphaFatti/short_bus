@@ -104,21 +104,33 @@ void label(Graphics& g, const Font& font, String text, Rectangle<int> bounds, Co
     g.drawFittedText(text, bounds, alignment, 1, 0.85f);
 }
 
-void drawWarningLamp(Graphics& g, Point<float> center, float radius, Colour lens)
+void drawWarningLamp(Graphics& g, Point<float> center, float radius, Colour lens, float glow = 0.0f)
 {
     const auto ring = [center](float r) { return Rectangle<float>(r * 2.0f, r * 2.0f).withCentre(center); };
+    if (glow > 0.0f)
+    {
+        const auto haloRadius = radius * 1.82f;
+        ColourGradient halo(Colour(0xffff3821).withAlpha(glow * 0.80f), center.x, center.y,
+                            Colours::transparentBlack, center.x + haloRadius, center.y, true);
+        halo.addColour(0.50, Colour(0xffff3020).withAlpha(glow * 0.57f));
+        g.setGradientFill(halo);
+        g.fillEllipse(ring(haloRadius));
+    }
+
     g.setColour(Colour(0xff111315));
     g.fillEllipse(ring(radius));
-    g.setColour(Colour(0xff596065));
+    g.setColour(Colour(0xff596065).interpolatedWith(Colour(0xffff6a4c), glow * 0.8f));
     g.drawEllipse(ring(radius - 2.2f), 1.0f);
     const auto face = ring(radius - 4.4f);
-    g.setGradientFill(ColourGradient(lens.brighter(0.38f), center.x, face.getY(),
-                                    lens.darker(0.58f), center.x, face.getBottom(), false));
+    const auto top = lens.brighter(0.38f).interpolatedWith(Colour(0xffff9d58), glow);
+    const auto bottom = lens.darker(0.58f).interpolatedWith(Colour(0xfff92d1f), glow);
+    g.setGradientFill(ColourGradient(top, center.x, face.getY(), bottom, center.x, face.getBottom(), false));
     g.fillEllipse(face);
-    g.setColour(lens.brighter(0.85f).withAlpha(0.35f));
+    const auto reflection = lens.brighter(0.85f).interpolatedWith(Colour(0xffffdf9b), glow);
+    g.setColour(reflection.withAlpha(0.35f + glow * 0.5f));
     g.fillEllipse(face.withSizeKeepingCentre(face.getWidth() * 0.53f, face.getHeight() * 0.22f)
                       .translated(0.0f, -radius * 0.31f));
-    g.setColour(Colours::black.withAlpha(0.16f));
+    g.setColour(Colours::black.withAlpha(0.16f * (1.0f - glow)));
     g.fillRoundedRectangle(face.reduced(face.getWidth() * 0.12f, face.getHeight() * 0.32f), 2.0f);
 }
 
@@ -362,6 +374,7 @@ void Editor::bindControls()
 {
     finishGraphDrag();
     setMouseCursor(MouseCursor::NormalCursor);
+    refreshSettings();
     const auto isMulti = selected == Stage::multiband;
     mode.setVisible(selected == Stage::lowLevel);
     const auto stagePrefix = param::stage(selected);
@@ -405,6 +418,9 @@ void Editor::bindControls()
         {
             bind(bandPrefix, { "low_hz", "Low edge (Hz)" });
             bind(bandPrefix, { "high_hz", "High edge (Hz)" });
+            limitFrequencySlider(sliders[0], dsp::BandEdge::low);
+            limitFrequencySlider(sliders[1], dsp::BandEdge::high);
+            refreshFrequencySliders();
         }
         for (const auto& control : dynamicsControls)
             bind(isMulti ? bandPrefix : stagePrefix, control);
@@ -413,6 +429,41 @@ void Editor::bindControls()
     }
     resized();
     repaint();
+}
+
+void Editor::refreshSettings()
+{
+    settings = processor.currentSettings();
+    bandSpans = dsp::orderedBandSpans(settings.bands, processor.displayRate());
+}
+
+float Editor::limitFrequency(std::size_t band, dsp::BandEdge bandEdge, float requested) const
+{
+    const auto rate = processor.displayRate();
+    const auto spans = dsp::orderedBandSpans(processor.currentSettings().bands, rate);
+    return dsp::constrainBandFrequency(spans, band, bandEdge, requested, rate);
+}
+
+void Editor::limitFrequencySlider(Slider& slider, dsp::BandEdge bandEdge)
+{
+    const auto id = param::id(param::band(selectedBand), bandEdge == dsp::BandEdge::low ? "low_hz" : "high_hz");
+    const auto range = processor.state.getParameter(id)->getNormalisableRange();
+    const auto band = static_cast<std::size_t>(selectedBand);
+    NormalisableRange<double> limited { range.start, range.end,
+        [range](double, double, double v) { return range.convertFrom0to1(static_cast<float>(v)); },
+        [range](double, double, double v) { return range.convertTo0to1(static_cast<float>(v)); },
+        [this, band, bandEdge](double, double, double v) { return limitFrequency(band, bandEdge, static_cast<float>(v)); }
+    };
+    limited.interval = range.interval;
+    limited.skew = range.skew;
+    slider.setNormalisableRange(std::move(limited));
+}
+
+void Editor::refreshFrequencySliders()
+{
+    const auto span = edges(selectedBand);
+    sliders[0].setValue(span.low, dontSendNotification);
+    sliders[1].setValue(span.high, dontSendNotification);
 }
 
 void Editor::moveStage(int direction)
@@ -431,7 +482,7 @@ void Editor::moveStage(int direction)
 
 void Editor::applyOrder()
 {
-    settings = processor.currentSettings();
+    refreshSettings();
     order = dsp::orders[static_cast<std::size_t>(settings.order)];
     earlier.setEnabled(order.front() != selected);
     later.setEnabled(order.back() != selected);
@@ -535,17 +586,14 @@ void Editor::drawBus(Graphics& g)
     }
 
     const auto lampRadius = jlimit(17.0f, 26.0f, width * 0.035f);
-    const auto leftPhase = (Time::getMillisecondCounter() / 500u) % 2u == 0u;
-    const auto flashing = bypass.getToggleState();
-    const auto lit = Colour(0xffff4b35);
     for (auto offset : { width * 0.16f, width * 0.083f })
     {
         const auto outer = offset > width * 0.1f;
         const auto lens = outer ? Colour(0xff8f322c) : Colour(0xff97501b);
-        const auto leftLens = flashing && outer && leftPhase ? lit : lens;
-        const auto rightLens = flashing && outer && !leftPhase ? lit : lens;
-        drawWarningLamp(g, { middle - signWidth * 0.5f + width * 0.025f - offset, 87.0f }, lampRadius, leftLens);
-        drawWarningLamp(g, { middle + signWidth * 0.5f - width * 0.025f + offset, 87.0f }, lampRadius, rightLens);
+        drawWarningLamp(g, { middle - signWidth * 0.5f + width * 0.025f - offset, 87.0f },
+                        lampRadius, lens, outer ? lampGlow[0] : 0.0f);
+        drawWarningLamp(g, { middle + signWidth * 0.5f - width * 0.025f + offset, 87.0f },
+                        lampRadius, lens, outer ? lampGlow[1] : 0.0f);
     }
     for (auto offset : { -23.0f, 0.0f, 23.0f })
     {
@@ -611,7 +659,7 @@ void Editor::drawHeader(Graphics& g)
     {
         const auto x = bands.back().getRight() + 7;
         const auto width = bandOn.getX() - x - 7;
-        label(g, theme.font(10.5f), "Drag nodes / edges", { x, optionTop, width, 22 }, muted);
+        label(g, theme.font(10.5f), "Nodes up/down", { x, optionTop, width, 22 }, muted);
     }
 }
 
@@ -709,15 +757,27 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     auto readout = bounds.toNearestInt().removeFromRight(175).reduced(11, 9);
     label(g, theme.font(10.5f, true), "GAIN CHANGE", readout.removeFromTop(14), muted);
     const auto change = meters.stages[dsp::index(selected)];
-    label(g, theme.font(24.0f, true), signedDb(change), readout.removeFromTop(30), on ? yellow : muted);
-    label(g, theme.font(11.0f), limiterSelected ? "Drag ceiling up / down" : "Drag threshold left / right",
-          readout.removeFromTop(16), muted);
+    label(g, theme.font(24.0f, true), signedDb(change), readout.removeFromTop(25), on ? yellow : muted);
+    const auto hint = [&](const char* line)
+    {
+        label(g, theme.font(10.5f), line, readout.removeFromTop(13), muted);
+    };
+    if (limiterSelected)
+    {
+        hint("Ceiling  /  up-down");
+    }
+    else
+    {
+        hint("Threshold  /  left-right");
+        hint(isLow ? "Below  /  range up-down" : "Below  /  gain up-down");
+        if (!isLow)
+            hint("Above  /  ratio up-down");
+    }
 }
 
 dsp::Edges Editor::edges(int band) const
 {
-    const auto& range = settings.bands[static_cast<std::size_t>(band)];
-    return dsp::effectiveEdges(range.lowHz, range.highHz, processor.displayRate());
+    return bandSpans[static_cast<std::size_t>(band)];
 }
 
 float Editor::frequencyToX(float hz) const
@@ -823,6 +883,23 @@ void Editor::updateSpectrum()
     }
 }
 
+void Editor::animateBypassLights()
+{
+    const auto now = Time::getMillisecondCounterHiRes();
+    const auto elapsed = std::max(0.0, now - lastLampTick);
+    lastLampTick = now;
+    const auto activeSide = static_cast<std::size_t>(now / 500.0) % lampGlow.size();
+    for (std::size_t i = 0; i < lampGlow.size(); ++i)
+    {
+        const auto target = bypass.getToggleState() && i == activeSide ? 1.0f : 0.0f;
+        const auto thermalTimeMs = target > lampGlow[i] ? 52.0 : 105.0;
+        const auto retained = static_cast<float>(std::exp(-elapsed / thermalTimeMs));
+        lampGlow[i] = target + (lampGlow[i] - target) * retained;
+        if (lampGlow[i] < 0.004f)
+            lampGlow[i] = 0.0f;
+    }
+}
+
 void Editor::timerCallback()
 {
     const auto previous = order;
@@ -839,7 +916,11 @@ void Editor::timerCallback()
         stages[i].repaint();
     }
     if (selected == Stage::multiband)
+    {
+        refreshFrequencySliders();
         updateSpectrum();
+    }
+    animateBypassLights();
     repaint();
 }
 
@@ -861,8 +942,16 @@ std::optional<Editor::GraphHit> Editor::graphHit(Point<float> position) const
         else
         {
             const auto threshold = selected == Stage::lowLevel ? settings.lowLevel.threshold : settings.compressor.threshold;
-            if (std::abs(position.x - inputToX(area, threshold)) <= 9.0f)
+            const auto thresholdX = inputToX(area, threshold);
+            if (std::abs(position.x - thresholdX) <= 9.0f)
                 return GraphHit { GraphControl::threshold };
+            if (area.contains(position))
+            {
+                if (selected == Stage::compressor)
+                    return GraphHit { position.x < thresholdX ? GraphControl::makeup : GraphControl::ratio };
+                if (position.x < thresholdX)
+                    return GraphHit { GraphControl::range };
+            }
         }
         return {};
     }
@@ -904,12 +993,10 @@ void Editor::mouseMove(const MouseEvent& event)
     auto graphCursor = MouseCursor::NormalCursor;
     if (hit)
     {
-        if (hit->control == GraphControl::ceiling)
-            graphCursor = MouseCursor::UpDownResizeCursor;
-        else if (hit->control == GraphControl::bandNode)
-            graphCursor = MouseCursor::DraggingHandCursor;
-        else
-            graphCursor = MouseCursor::LeftRightResizeCursor;
+        const auto control = hit->control;
+        const auto horizontal = control == GraphControl::threshold || control == GraphControl::bandLow
+            || control == GraphControl::bandHigh;
+        graphCursor = horizontal ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor;
     }
     setMouseCursor(graphCursor);
 }
@@ -920,7 +1007,7 @@ void Editor::mouseDown(const MouseEvent& event)
         return;
 
     finishGraphDrag();
-    settings = processor.currentSettings();
+    refreshSettings();
     const auto hit = graphHit(event.position);
     if (!hit)
         return;
@@ -931,32 +1018,43 @@ void Editor::mouseDown(const MouseEvent& event)
         bindControls();
     }
 
-    auto& drag = graphDrag.emplace(GraphDrag { *hit, event.position });
-    const auto parameter = [this](const String& prefix, const char* name)
+    const auto name = [control = hit->control]
     {
-        return processor.state.getParameter(param::id(prefix, name));
-    };
-    if (selected != Stage::multiband)
+        switch (control)
+        {
+            case GraphControl::threshold:
+            case GraphControl::bandNode: return "threshold";
+            case GraphControl::ceiling: return "ceiling";
+            case GraphControl::makeup: return "makeup";
+            case GraphControl::ratio: return "ratio";
+            case GraphControl::range: return "range";
+            case GraphControl::bandLow: return "low_hz";
+            case GraphControl::bandHigh: return "high_hz";
+        }
+        return "";
+    }();
+    const auto prefix = selected == Stage::multiband ? param::band(hit->band) : param::stage(selected);
+    auto* parameter = processor.state.getParameter(param::id(prefix, name));
+    if (parameter == nullptr)
+        return;
+
+    auto& drag = graphDrag.emplace(GraphDrag { *hit, event.position, parameter,
+                                               parameter->convertFrom0to1(parameter->getValue()) });
+    if (hit->control == GraphControl::bandLow)
+        drag.startEdgeHz = edges(hit->band).low;
+    else if (hit->control == GraphControl::bandHigh)
+        drag.startEdgeHz = edges(hit->band).high;
+    else if (hit->control == GraphControl::ratio)
     {
-        drag.parameters[0] = parameter(param::stage(selected),
-            hit->control == GraphControl::ceiling ? "ceiling" : "threshold");
-        drag.initialDb = drag.parameters[0]->convertFrom0to1(drag.parameters[0]->getValue());
+        const auto area = transferArea();
+        const auto distance = event.position.x - inputToX(area, settings.compressor.threshold);
+        drag.ratioDepthDb = std::max(24.0f, distance * transferSpanDb / area.getWidth());
     }
-    else
+    else if (hit->control == GraphControl::range && settings.lowMode == dsp::LowMode::expand)
     {
-        const auto prefix = param::band(hit->band);
-        const auto& band = settings.bands[static_cast<std::size_t>(hit->band)];
-        drag.span = edges(hit->band);
-        drag.originalEdges = { band.lowHz, band.highHz };
-        drag.initialDb = band.dynamics.threshold;
-        if (hit->control == GraphControl::bandNode)
-            drag.parameters = { parameter(prefix, "low_hz"), parameter(prefix, "high_hz"), parameter(prefix, "threshold") };
-        else
-            drag.parameters[0] = parameter(prefix, hit->control == GraphControl::bandLow ? "low_hz" : "high_hz");
+        drag.rangeDirection = -1.0f;
     }
-    for (auto* control : drag.parameters)
-        if (control != nullptr)
-            control->beginChangeGesture();
+    parameter->beginChangeGesture();
 }
 
 void Editor::mouseDrag(const MouseEvent& event)
@@ -966,56 +1064,46 @@ void Editor::mouseDrag(const MouseEvent& event)
 
     const auto& drag = *graphDrag;
     const auto delta = event.position - drag.start;
-    if (drag.target.control == GraphControl::threshold || drag.target.control == GraphControl::ceiling)
+    const auto area = transferArea();
+    auto next = drag.initialValue;
+    switch (drag.target.control)
     {
-        const auto area = transferArea();
-        const auto change = drag.target.control == GraphControl::ceiling
-            ? -delta.y * transferSpanDb / area.getHeight()
-            : delta.x * transferSpanDb / area.getWidth();
-        setGraphValue(*drag.parameters[0], drag.initialDb + change);
+        case GraphControl::threshold:
+            next += delta.x * transferSpanDb / area.getWidth();
+            break;
+        case GraphControl::ceiling:
+        case GraphControl::makeup:
+        case GraphControl::range:
+            next -= drag.rangeDirection * delta.y * transferSpanDb / area.getHeight();
+            break;
+        case GraphControl::ratio:
+        {
+            const auto& range = drag.parameter->getNormalisableRange();
+            const auto slopeChange = -delta.y * transferSpanDb / (area.getHeight() * drag.ratioDepthDb);
+            const auto slope = std::clamp(1.0f / drag.initialValue + slopeChange, 1.0f / range.end, 1.0f / range.start);
+            next = 1.0f / slope;
+            break;
+        }
+        case GraphControl::bandNode:
+            next += delta.y * spectrumMinDb / spectrumArea().getHeight();
+            break;
+        case GraphControl::bandLow:
+        case GraphControl::bandHigh:
+        {
+            if (std::abs(delta.x) < 1.0e-4f)
+                break;
+            const auto factor = std::pow(dsp::maxHz / dsp::minHz, delta.x / plot().reduced(9.0f, 0.0f).getWidth());
+            const auto band = static_cast<std::size_t>(drag.target.band);
+            const auto edge = drag.target.control == GraphControl::bandLow ? dsp::BandEdge::low : dsp::BandEdge::high;
+            next = limitFrequency(band, edge, drag.startEdgeHz * factor);
+            break;
+        }
     }
-    else
-    {
-        const auto upper = dsp::effectiveEdges(dsp::minHz, dsp::maxHz, processor.displayRate()).high;
-        const auto factor = std::pow(dsp::maxHz / dsp::minHz, delta.x / plot().reduced(9.0f, 0.0f).getWidth());
-        const auto span = edges(drag.target.band);
-        const auto unchangedX = std::abs(delta.x) < 1.0e-4f;
-        if (drag.target.control == GraphControl::bandLow)
-        {
-            const auto low = std::clamp(drag.span.low * factor, dsp::minHz, span.high / dsp::edgeRatio);
-            setGraphValue(*drag.parameters[0], unchangedX ? drag.originalEdges.low : std::floor(low));
-        }
-        else if (drag.target.control == GraphControl::bandHigh)
-        {
-            const auto high = std::clamp(drag.span.high * factor, std::min(upper, span.low * dsp::edgeRatio), upper);
-            setGraphValue(*drag.parameters[0], unchangedX ? drag.originalEdges.high : std::ceil(high));
-        }
-        else
-        {
-            const auto minShift = dsp::minHz / drag.span.low;
-            const auto shift = std::clamp(factor, minShift, std::max(minShift, upper / drag.span.high));
-            auto next = drag.originalEdges;
-            if (std::abs(shift - 1.0f) > 1.0e-6f)
-            {
-                next.high = std::round(drag.span.high * shift);
-                next.low = std::min(std::round(drag.span.low * shift), std::floor(next.high / dsp::edgeRatio));
-            }
 
-            // Move the leading edge first so the intermediate band stays ordered.
-            if (next.low > settings.bands[static_cast<std::size_t>(drag.target.band)].lowHz)
-            {
-                setGraphValue(*drag.parameters[1], next.high);
-                setGraphValue(*drag.parameters[0], next.low);
-            }
-            else
-            {
-                setGraphValue(*drag.parameters[0], next.low);
-                setGraphValue(*drag.parameters[1], next.high);
-            }
-            setGraphValue(*drag.parameters[2], drag.initialDb + delta.y * spectrumMinDb / spectrumArea().getHeight());
-        }
-    }
-    settings = processor.currentSettings();
+    setGraphValue(*drag.parameter, next);
+    refreshSettings();
+    if (selected == Stage::multiband)
+        refreshFrequencySliders();
     repaint(plot().getSmallestIntegerContainer());
 }
 
@@ -1023,9 +1111,7 @@ void Editor::finishGraphDrag()
 {
     if (graphDrag)
     {
-        for (auto* control : graphDrag->parameters)
-            if (control != nullptr)
-                control->endChangeGesture();
+        graphDrag->parameter->endChangeGesture();
         graphDrag.reset();
     }
 }

@@ -105,7 +105,7 @@ public:
     void configure(float rate, BandSettings settings, bool stageEnabled)
     {
         const auto edges = effectiveEdges(settings.lowHz, settings.highHz, rate);
-        const auto upper = std::min(maxHz, rate * 0.45f);
+        const auto upper = static_cast<float>(bandCeilingHz(rate));
         constexpr float pi = 3.14159265358979323846f;
         low.configure(std::tan(pi * edges.low / rate), edges.low > minHz + 0.5f);
         high.configure(std::tan(pi * edges.high / rate), edges.high < upper - 1.0f);

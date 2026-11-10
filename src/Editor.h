@@ -50,7 +50,7 @@ private:
         void paintButton(juce::Graphics&, bool hovered, bool pressed) override;
     };
 
-    enum class GraphControl { threshold, ceiling, bandLow, bandHigh, bandNode };
+    enum class GraphControl { threshold, ceiling, makeup, ratio, range, bandLow, bandHigh, bandNode };
 
     struct GraphHit
     {
@@ -62,14 +62,21 @@ private:
     {
         GraphHit target;
         juce::Point<float> start;
-        std::array<juce::RangedAudioParameter*, 3> parameters {};
-        dsp::Edges span {}, originalEdges {};
-        float initialDb = 0.0f;
+        juce::RangedAudioParameter* parameter;
+        float initialValue;
+        float startEdgeHz = 0.0f;
+        float ratioDepthDb = 24.0f;
+        float rangeDirection = 1.0f;
     };
 
     void timerCallback() override;
     void selectStage(dsp::Stage);
     void bindControls();
+    void refreshSettings();
+    void limitFrequencySlider(juce::Slider&, dsp::BandEdge);
+    void refreshFrequencySliders();
+    float limitFrequency(std::size_t band, dsp::BandEdge, float requested) const;
+    void animateBypassLights();
     void moveStage(int direction);
     void applyOrder();
     void updateSpectrum();
@@ -95,8 +102,11 @@ private:
     BusLookAndFeel theme;
     Processor& processor;
     dsp::Settings settings;
+    dsp::BandSpans bandSpans {};
     dsp::Metering meters;
     std::array<float, 2> peaks {};
+    std::array<float, 2> lampGlow {};
+    double lastLampTick = juce::Time::getMillisecondCounterHiRes();
     dsp::Order order = dsp::defaultOrder;
     dsp::Stage selected = dsp::Stage::lowLevel;
     int selectedBand = 0;

@@ -93,8 +93,12 @@ void Rack::Chain::configure(const Settings& settings)
     lowLevel.configure(sampleRate, settings.lowLevel,
         settings.lowMode == LowMode::expand ? Curve::expand : Curve::lift);
     compressor.configure(sampleRate, settings.compressor, Curve::compress);
+    const auto spans = orderedBandSpans(settings.bands, sampleRate);
     for (std::size_t i = 0; i < bands.size(); ++i)
-        bands[i].configure(sampleRate, settings.bands[i], settings.multiEnabled);
+    {
+        const auto span = spans[i];
+        bands[i].configure(sampleRate, { span.low, span.high, settings.bands[i].dynamics }, settings.multiEnabled);
+    }
     limiter.configure(settings.limiter);
 }
 
