@@ -33,6 +33,10 @@ constexpr int optionTop = 226;
 constexpr int bumperDepth = 70;
 constexpr int sliderRowsBottom = 81;
 constexpr int sliderRowHeight = 36;
+constexpr float transferMinDb = -72.0f;
+constexpr float transferMaxDb = 6.0f;
+constexpr float transferSpanDb = transferMaxDb - transferMinDb;
+constexpr float spectrumMinDb = -85.0f;
 const std::array<Colour, dsp::bandCount> bandColours {
     Colour(0xfff0bf58), Colour(0xff73d6b6), Colour(0xff79bbea),
     Colour(0xffb7a7f6), Colour(0xfff090ab)
@@ -138,10 +142,35 @@ Path stopSign(Rectangle<float> bounds)
     return outline;
 }
 
-float levelToY(Rectangle<float> area, float db)
+float levelToY(Rectangle<float> area, float db, float floor = transferMinDb, float ceiling = transferMaxDb)
 {
-    return area.getBottom() - area.getHeight() * jlimit(0.0f, 1.0f, (db + 72.0f) / 78.0f);
+    return area.getBottom() - area.getHeight() * jlimit(0.0f, 1.0f, (db - floor) / (ceiling - floor));
 }
+
+float inputToX(Rectangle<float> area, float db)
+{
+    return area.getX() + area.getWidth() * (db - transferMinDb) / transferSpanDb;
+}
+
+void drawNode(Graphics& g, Point<float> position, Colour colour, bool selected)
+{
+    const auto size = selected ? 12.0f : 9.0f;
+    const auto ring = Rectangle<float>(size, size).withCentre(position);
+    g.setColour(graph);
+    g.fillEllipse(ring.expanded(1.0f));
+    g.setColour(colour);
+    g.drawEllipse(ring, 1.4f);
+    if (selected)
+        g.fillEllipse(ring.reduced(3.0f));
+}
+
+void setGraphValue(RangedAudioParameter& parameter, float value)
+{
+    const auto normalised = parameter.convertTo0to1(value);
+    if (std::abs(normalised - parameter.getValue()) > 1.0e-7f)
+        parameter.setValueNotifyingHost(normalised);
+}
+
 } // namespace
 
 Editor::BusLookAndFeel::BusLookAndFeel()
@@ -248,7 +277,7 @@ Editor::Editor(Processor& owner)
       order(dsp::orders[static_cast<std::size_t>(settings.order)])
 {
     setLookAndFeel(&theme);
-    levels.fill(-85.0f);
+    levels.fill(spectrumMinDb);
     for (std::size_t i = 0; i < stages.size(); ++i)
     {
         auto& button = stages[i];
@@ -315,8 +344,7 @@ Editor::~Editor()
 {
     stopTimer();
     processor.spectrumRequested.store(false, std::memory_order_relaxed);
-    if (draggedEdge != nullptr)
-        draggedEdge->endChangeGesture();
+    finishGraphDrag();
     setLookAndFeel(nullptr);
 }
 
@@ -332,6 +360,8 @@ void Editor::selectStage(Stage stage)
 
 void Editor::bindControls()
 {
+    finishGraphDrag();
+    setMouseCursor(MouseCursor::NormalCursor);
     const auto isMulti = selected == Stage::multiband;
     mode.setVisible(selected == Stage::lowLevel);
     const auto stagePrefix = param::stage(selected);
@@ -454,6 +484,16 @@ Rectangle<float> Editor::plot() const
         .withTrimmedBottom(sliderRowsBottom + sliderRowHeight * 2 + 5).toFloat();
 }
 
+Rectangle<float> Editor::transferArea() const
+{
+    return plot().withTrimmedRight(182.0f).reduced(22.0f, 18.0f);
+}
+
+Rectangle<float> Editor::spectrumArea() const
+{
+    return plot().withTrimmedBottom(19.0f).withTrimmedTop(5.0f);
+}
+
 void Editor::drawBus(Graphics& g)
 {
     const auto width = static_cast<float>(getWidth());
@@ -495,11 +535,17 @@ void Editor::drawBus(Graphics& g)
     }
 
     const auto lampRadius = jlimit(17.0f, 26.0f, width * 0.035f);
+    const auto leftPhase = (Time::getMillisecondCounter() / 500u) % 2u == 0u;
+    const auto flashing = bypass.getToggleState();
+    const auto lit = Colour(0xffff4b35);
     for (auto offset : { width * 0.16f, width * 0.083f })
     {
-        const auto lens = offset > width * 0.1f ? Colour(0xff8f322c) : Colour(0xff97501b);
-        drawWarningLamp(g, { middle - signWidth * 0.5f + width * 0.025f - offset, 87.0f }, lampRadius, lens);
-        drawWarningLamp(g, { middle + signWidth * 0.5f - width * 0.025f + offset, 87.0f }, lampRadius, lens);
+        const auto outer = offset > width * 0.1f;
+        const auto lens = outer ? Colour(0xff8f322c) : Colour(0xff97501b);
+        const auto leftLens = flashing && outer && leftPhase ? lit : lens;
+        const auto rightLens = flashing && outer && !leftPhase ? lit : lens;
+        drawWarningLamp(g, { middle - signWidth * 0.5f + width * 0.025f - offset, 87.0f }, lampRadius, leftLens);
+        drawWarningLamp(g, { middle + signWidth * 0.5f - width * 0.025f + offset, 87.0f }, lampRadius, rightLens);
     }
     for (auto offset : { -23.0f, 0.0f, 23.0f })
     {
@@ -561,6 +607,12 @@ void Editor::drawHeader(Graphics& g)
           { controlInset, inspectorTop, 218, 24 }, white);
     label(g, theme.font(10.5f, true), "MOVE", { getWidth() - controlInset - 97, inspectorTop, 35, 24 },
           muted, Justification::centredRight);
+    if (selected == Stage::multiband)
+    {
+        const auto x = bands.back().getRight() + 7;
+        const auto width = bandOn.getX() - x - 7;
+        label(g, theme.font(10.5f), "Drag nodes / edges", { x, optionTop, width, 22 }, muted);
+    }
 }
 
 void Editor::drawBumper(Graphics& g)
@@ -604,11 +656,10 @@ void Editor::paint(Graphics& g)
 
 void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
 {
-    const auto area = bounds.withTrimmedRight(182.0f).reduced(22.0f, 18.0f);
-    const auto xForDb = [&](float db) { return area.getX() + area.getWidth() * (db + 72.0f) / 78.0f; };
+    const auto area = transferArea();
     for (const auto db : { -60.0f, -48.0f, -36.0f, -24.0f, -12.0f, 0.0f })
     {
-        const auto x = xForDb(db);
+        const auto x = inputToX(area, db);
         const auto y = levelToY(area, db);
         g.setColour(panel);
         g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
@@ -627,23 +678,39 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     Path trace;
     for (int point = 0; point <= 156; ++point)
     {
-        const auto input = -72.0f + static_cast<float>(point) * 0.5f;
+        const auto input = transferMinDb + static_cast<float>(point) * 0.5f;
         const auto output = selected == Stage::limiter
             ? std::min(input + settings.limiter.drive, settings.limiter.ceiling)
             : input + dsp::staticGain(input, dynamics, curve) + dynamics.makeup;
         if (point == 0)
-            trace.startNewSubPath(xForDb(input), levelToY(area, output));
+            trace.startNewSubPath(inputToX(area, input), levelToY(area, output));
         else
-            trace.lineTo(xForDb(input), levelToY(area, output));
+            trace.lineTo(inputToX(area, input), levelToY(area, output));
     }
     g.setColour(on ? yellow : muted);
     g.strokePath(trace, PathStrokeType(1.7f));
+
+    const auto limiterSelected = selected == Stage::limiter;
+    g.setColour(yellow.withAlpha(0.40f));
+    if (limiterSelected)
+    {
+        const auto y = levelToY(area, settings.limiter.ceiling);
+        g.drawHorizontalLine(roundToInt(y), area.getX(), area.getRight());
+        drawNode(g, { area.getRight() - 7.0f, y }, yellow, true);
+    }
+    else
+    {
+        const auto x = inputToX(area, dynamics.threshold);
+        const auto output = dynamics.threshold + dsp::staticGain(dynamics.threshold, dynamics, curve) + dynamics.makeup;
+        g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
+        drawNode(g, { x, levelToY(area, output) }, yellow, true);
+    }
 
     auto readout = bounds.toNearestInt().removeFromRight(175).reduced(11, 9);
     label(g, theme.font(10.5f, true), "GAIN CHANGE", readout.removeFromTop(14), muted);
     const auto change = meters.stages[dsp::index(selected)];
     label(g, theme.font(24.0f, true), signedDb(change), readout.removeFromTop(30), on ? yellow : muted);
-    label(g, theme.font(11.5f), selected == Stage::limiter ? "Sample-peak ceiling" : "Static transfer / dBFS",
+    label(g, theme.font(11.0f), limiterSelected ? "Drag ceiling up / down" : "Drag threshold left / right",
           readout.removeFromTop(16), muted);
 }
 
@@ -659,16 +726,16 @@ float Editor::frequencyToX(float hz) const
     return bounds.getX() + bounds.getWidth() * std::log(hz / dsp::minHz) / std::log(dsp::maxHz / dsp::minHz);
 }
 
-float Editor::xToFrequency(float x) const
+Point<float> Editor::bandNode(int band) const
 {
-    const auto bounds = plot().reduced(9.0f, 0.0f);
-    const auto proportion = jlimit(0.0f, 1.0f, (x - bounds.getX()) / bounds.getWidth());
-    return dsp::minHz * std::pow(dsp::maxHz / dsp::minHz, proportion);
+    const auto span = edges(band);
+    const auto threshold = settings.bands[static_cast<std::size_t>(band)].dynamics.threshold;
+    return { frequencyToX(std::sqrt(span.low * span.high)), levelToY(spectrumArea(), threshold, spectrumMinDb, 0.0f) };
 }
 
 void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
 {
-    const auto area = bounds.withTrimmedBottom(19.0f).withTrimmedTop(5.0f);
+    const auto area = spectrumArea();
     for (auto frequency : { 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 10000.0f, 20000.0f })
     {
         const auto x = frequencyToX(frequency);
@@ -690,7 +757,7 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
         if (hz > dsp::maxHz)
             break;
         const auto x = frequencyToX(hz);
-        const auto y = area.getY() - jlimit(-85.0f, 0.0f, levels[bin]) * area.getHeight() / 85.0f;
+        const auto y = levelToY(area, levels[bin], spectrumMinDb, 0.0f);
         if (first)
             trace.startNewSubPath(x, y);
         else
@@ -722,6 +789,15 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
         if (on)
             g.fillRect(x, area.getY() + 23.0f, end - x,
                 jlimit(0.0f, 1.0f, -meters.bands[n] / 24.0f) * (area.getHeight() - 23.0f));
+    }
+    const auto span = edges(selectedBand);
+    const auto selectedColour = bandColours[static_cast<std::size_t>(selectedBand)];
+    g.setColour(selectedColour.withAlpha(0.50f));
+    g.drawHorizontalLine(roundToInt(bandNode(selectedBand).y), frequencyToX(span.low), frequencyToX(span.high));
+    for (int i = 0; i < dsp::bandCount; ++i)
+    {
+        const auto band = (selectedBand + i + 1) % dsp::bandCount;
+        drawNode(g, bandNode(band), bandColours[static_cast<std::size_t>(band)], band == selectedBand);
     }
     label(g, theme.font(11.0f, true), signedDb(meters.bands[static_cast<std::size_t>(selectedBand)]),
           area.toNearestInt().withHeight(16).reduced(13, 0),
@@ -767,38 +843,197 @@ void Editor::timerCallback()
     repaint();
 }
 
+std::optional<Editor::GraphHit> Editor::graphHit(Point<float> position) const
+{
+    if (!plot().contains(position))
+        return {};
+
+    if (selected != Stage::multiband)
+    {
+        const auto area = transferArea();
+        if (!area.expanded(8.0f).contains(position))
+            return {};
+        if (selected == Stage::limiter)
+        {
+            if (std::abs(position.y - levelToY(area, settings.limiter.ceiling)) <= 9.0f)
+                return GraphHit { GraphControl::ceiling };
+        }
+        else
+        {
+            const auto threshold = selected == Stage::lowLevel ? settings.lowLevel.threshold : settings.compressor.threshold;
+            if (std::abs(position.x - inputToX(area, threshold)) <= 9.0f)
+                return GraphHit { GraphControl::threshold };
+        }
+        return {};
+    }
+
+    const auto area = spectrumArea();
+    if (!area.expanded(0.0f, 5.0f).contains(position))
+        return {};
+    const auto span = edges(selectedBand);
+    const auto low = std::abs(position.x - frequencyToX(span.low));
+    const auto high = std::abs(position.x - frequencyToX(span.high));
+    std::optional<GraphHit> edge;
+    if (std::min(low, high) <= 9.0f)
+        edge = GraphHit { low <= high ? GraphControl::bandLow : GraphControl::bandHigh, selectedBand };
+    auto distanceSquared = 11.0f * 11.0f;
+    if (edge && position.y <= area.getY() + 20.0f)
+    {
+        const auto xDistance = std::min(low, high);
+        const auto yDistance = position.y - (area.getY() + 10.5f);
+        distanceSquared = std::min(distanceSquared, xDistance * xDistance + yDistance * yDistance);
+    }
+    auto closest = edge;
+    for (int i = 0; i < dsp::bandCount; ++i)
+    {
+        const auto band = (selectedBand + i) % dsp::bandCount;
+        const auto delta = position - bandNode(band);
+        const auto candidate = delta.x * delta.x + delta.y * delta.y;
+        if (candidate < distanceSquared)
+        {
+            closest = GraphHit { GraphControl::bandNode, band };
+            distanceSquared = candidate;
+        }
+    }
+    return closest;
+}
+
+void Editor::mouseMove(const MouseEvent& event)
+{
+    const auto hit = graphHit(event.position);
+    auto graphCursor = MouseCursor::NormalCursor;
+    if (hit)
+    {
+        if (hit->control == GraphControl::ceiling)
+            graphCursor = MouseCursor::UpDownResizeCursor;
+        else if (hit->control == GraphControl::bandNode)
+            graphCursor = MouseCursor::DraggingHandCursor;
+        else
+            graphCursor = MouseCursor::LeftRightResizeCursor;
+    }
+    setMouseCursor(graphCursor);
+}
+
 void Editor::mouseDown(const MouseEvent& event)
 {
-    if (selected != Stage::multiband || !plot().contains(event.position))
+    if (!event.mods.isLeftButtonDown())
         return;
-    const auto span = edges(selectedBand);
-    const auto lowDistance = std::abs(event.position.x - frequencyToX(span.low));
-    const auto highDistance = std::abs(event.position.x - frequencyToX(span.high));
-    if (std::min(lowDistance, highDistance) > 12.0f)
+
+    finishGraphDrag();
+    settings = processor.currentSettings();
+    const auto hit = graphHit(event.position);
+    if (!hit)
         return;
-    dragLowEdge = lowDistance <= highDistance;
-    draggedEdge = processor.state.getParameter(param::id(param::band(selectedBand), dragLowEdge ? "low_hz" : "high_hz"));
-    draggedEdge->beginChangeGesture();
+
+    if (selected == Stage::multiband && hit->band != selectedBand)
+    {
+        selectedBand = hit->band;
+        bindControls();
+    }
+
+    auto& drag = graphDrag.emplace(GraphDrag { *hit, event.position });
+    const auto parameter = [this](const String& prefix, const char* name)
+    {
+        return processor.state.getParameter(param::id(prefix, name));
+    };
+    if (selected != Stage::multiband)
+    {
+        drag.parameters[0] = parameter(param::stage(selected),
+            hit->control == GraphControl::ceiling ? "ceiling" : "threshold");
+        drag.initialDb = drag.parameters[0]->convertFrom0to1(drag.parameters[0]->getValue());
+    }
+    else
+    {
+        const auto prefix = param::band(hit->band);
+        const auto& band = settings.bands[static_cast<std::size_t>(hit->band)];
+        drag.span = edges(hit->band);
+        drag.originalEdges = { band.lowHz, band.highHz };
+        drag.initialDb = band.dynamics.threshold;
+        if (hit->control == GraphControl::bandNode)
+            drag.parameters = { parameter(prefix, "low_hz"), parameter(prefix, "high_hz"), parameter(prefix, "threshold") };
+        else
+            drag.parameters[0] = parameter(prefix, hit->control == GraphControl::bandLow ? "low_hz" : "high_hz");
+    }
+    for (auto* control : drag.parameters)
+        if (control != nullptr)
+            control->beginChangeGesture();
 }
 
 void Editor::mouseDrag(const MouseEvent& event)
 {
-    if (draggedEdge == nullptr)
+    if (!graphDrag)
         return;
-    const auto span = edges(selectedBand);
-    const auto hz = xToFrequency(event.position.x);
-    const auto next = dragLowEdge ? std::floor(std::min(hz, span.high / dsp::edgeRatio))
-                                  : std::ceil(std::max(hz, span.low * dsp::edgeRatio));
-    draggedEdge->setValueNotifyingHost(draggedEdge->convertTo0to1(jlimit(dsp::minHz, dsp::maxHz, next)));
+
+    const auto& drag = *graphDrag;
+    const auto delta = event.position - drag.start;
+    if (drag.target.control == GraphControl::threshold || drag.target.control == GraphControl::ceiling)
+    {
+        const auto area = transferArea();
+        const auto change = drag.target.control == GraphControl::ceiling
+            ? -delta.y * transferSpanDb / area.getHeight()
+            : delta.x * transferSpanDb / area.getWidth();
+        setGraphValue(*drag.parameters[0], drag.initialDb + change);
+    }
+    else
+    {
+        const auto upper = dsp::effectiveEdges(dsp::minHz, dsp::maxHz, processor.displayRate()).high;
+        const auto factor = std::pow(dsp::maxHz / dsp::minHz, delta.x / plot().reduced(9.0f, 0.0f).getWidth());
+        const auto span = edges(drag.target.band);
+        const auto unchangedX = std::abs(delta.x) < 1.0e-4f;
+        if (drag.target.control == GraphControl::bandLow)
+        {
+            const auto low = std::clamp(drag.span.low * factor, dsp::minHz, span.high / dsp::edgeRatio);
+            setGraphValue(*drag.parameters[0], unchangedX ? drag.originalEdges.low : std::floor(low));
+        }
+        else if (drag.target.control == GraphControl::bandHigh)
+        {
+            const auto high = std::clamp(drag.span.high * factor, std::min(upper, span.low * dsp::edgeRatio), upper);
+            setGraphValue(*drag.parameters[0], unchangedX ? drag.originalEdges.high : std::ceil(high));
+        }
+        else
+        {
+            const auto minShift = dsp::minHz / drag.span.low;
+            const auto shift = std::clamp(factor, minShift, std::max(minShift, upper / drag.span.high));
+            auto next = drag.originalEdges;
+            if (std::abs(shift - 1.0f) > 1.0e-6f)
+            {
+                next.high = std::round(drag.span.high * shift);
+                next.low = std::min(std::round(drag.span.low * shift), std::floor(next.high / dsp::edgeRatio));
+            }
+
+            // Move the leading edge first so the intermediate band stays ordered.
+            if (next.low > settings.bands[static_cast<std::size_t>(drag.target.band)].lowHz)
+            {
+                setGraphValue(*drag.parameters[1], next.high);
+                setGraphValue(*drag.parameters[0], next.low);
+            }
+            else
+            {
+                setGraphValue(*drag.parameters[0], next.low);
+                setGraphValue(*drag.parameters[1], next.high);
+            }
+            setGraphValue(*drag.parameters[2], drag.initialDb + delta.y * spectrumMinDb / spectrumArea().getHeight());
+        }
+    }
+    settings = processor.currentSettings();
+    repaint(plot().getSmallestIntegerContainer());
 }
 
-void Editor::mouseUp(const MouseEvent&)
+void Editor::finishGraphDrag()
 {
-    if (draggedEdge != nullptr)
+    if (graphDrag)
     {
-        draggedEdge->endChangeGesture();
-        draggedEdge = nullptr;
+        for (auto* control : graphDrag->parameters)
+            if (control != nullptr)
+                control->endChangeGesture();
+        graphDrag.reset();
     }
+}
+
+void Editor::mouseUp(const MouseEvent& event)
+{
+    finishGraphDrag();
+    mouseMove(event);
 }
 
 } // namespace shortbus

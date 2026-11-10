@@ -3,6 +3,7 @@
 
 #include "Processor.h"
 #include <juce_dsp/juce_dsp.h>
+#include <optional>
 
 namespace shortbus
 {
@@ -13,6 +14,7 @@ public:
     ~Editor() override;
     void resized() override;
     void paint(juce::Graphics&) override;
+    void mouseMove(const juce::MouseEvent&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
@@ -48,6 +50,23 @@ private:
         void paintButton(juce::Graphics&, bool hovered, bool pressed) override;
     };
 
+    enum class GraphControl { threshold, ceiling, bandLow, bandHigh, bandNode };
+
+    struct GraphHit
+    {
+        GraphControl control;
+        int band = 0;
+    };
+
+    struct GraphDrag
+    {
+        GraphHit target;
+        juce::Point<float> start;
+        std::array<juce::RangedAudioParameter*, 3> parameters {};
+        dsp::Edges span {}, originalEdges {};
+        float initialDb = 0.0f;
+    };
+
     void timerCallback() override;
     void selectStage(dsp::Stage);
     void bindControls();
@@ -55,6 +74,11 @@ private:
     void applyOrder();
     void updateSpectrum();
     juce::Rectangle<float> plot() const;
+    juce::Rectangle<float> transferArea() const;
+    juce::Rectangle<float> spectrumArea() const;
+    juce::Point<float> bandNode(int band) const;
+    std::optional<GraphHit> graphHit(juce::Point<float>) const;
+    void finishGraphDrag();
     void drawBus(juce::Graphics&);
     void drawHeader(juce::Graphics&);
     void drawBumper(juce::Graphics&);
@@ -62,7 +86,6 @@ private:
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
     float frequencyToX(float) const;
-    float xToFrequency(float) const;
     dsp::Edges edges(int band) const;
 
     using SliderLink = juce::AudioProcessorValueTreeState::SliderAttachment;
@@ -88,8 +111,7 @@ private:
     std::array<std::unique_ptr<SliderLink>, controlCount> sliderLinks;
     std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink;
     std::unique_ptr<ChoiceLink> modeLink;
-    juce::RangedAudioParameter* draggedEdge = nullptr;
-    bool dragLowEdge = false;
+    std::optional<GraphDrag> graphDrag;
 
     juce::dsp::FFT fft { Processor::fftOrder };
     juce::dsp::WindowingFunction<float> window { Processor::fftSize,
