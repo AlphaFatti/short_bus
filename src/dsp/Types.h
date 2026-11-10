@@ -23,6 +23,7 @@ constexpr int edgeWidthNumerator = 28;
 constexpr int edgeWidthDenominator = 25;
 constexpr float edgeRatio = static_cast<float>(edgeWidthNumerator) / edgeWidthDenominator;
 constexpr float lookaheadMs = 3.0f;
+constexpr float maxRangeDb = 24.0f;
 
 using Order = std::array<Stage, stageCount>;
 constexpr Order defaultOrder { Stage::lowLevel, Stage::multiband, Stage::compressor, Stage::limiter };
@@ -91,6 +92,7 @@ struct BandSettings
     float lowHz;
     float highHz;
     DynamicsSettings dynamics { true, -24.0f, 1.8f, 25.0f, 180.0f, 6.0f, 4.0f, 0.0f };
+    bool lift = false;
 };
 
 constexpr std::array<BandSettings, bandCount> bandDefaults {{
@@ -203,9 +205,16 @@ inline float constrainBandFrequency(const BandSpans& spans, std::size_t band, Ba
     return static_cast<float>(std::clamp(wholeHz(requested, span.high), left, right));
 }
 
+struct StageMetering
+{
+    float inputPeak = 0.0f;
+    float gainDb = 0.0f;
+    float outputPeak = 0.0f;
+};
+
 struct Metering
 {
-    std::array<float, stageCount> stages {};
+    std::array<StageMetering, stageCount> stages {};
     std::array<float, bandCount> bands {};
 };
 

@@ -32,7 +32,7 @@ void addDynamics(Layout& layout, String prefix, String name, dsp::DynamicsSettin
     add("attack", "Attack", {0.5f, 250.0f, 0.1f, 0.35f}, defaults.attack);
     add("release", "Release", {10.0f, 2500.0f, 1.0f, 0.45f}, defaults.release);
     add("knee", "Knee", {0.0f, 18.0f, 0.1f}, defaults.knee);
-    add("range", "Range", {0.0f, 24.0f, 0.1f}, defaults.range);
+    add("range", "Range", {0.0f, dsp::maxRangeDb, 0.1f}, defaults.range);
     if (makeup)
         add("makeup", "Makeup", {-12.0f, 18.0f, 0.1f}, defaults.makeup);
 }
@@ -75,6 +75,8 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
     addFloat(layout, param::id(param::limit, "ceiling"), "Limiter Ceiling", {-18.0f, 0.0f, 0.1f}, -1.0f);
     addFloat(layout, param::id(param::limit, "drive"), "Limiter Drive", {-12.0f, 18.0f, 0.1f}, 0.0f);
     addFloat(layout, param::id(param::limit, "release"), "Limiter Release", {20.0f, 1000.0f, 1.0f, 0.45f}, 100.0f);
+    for (int i = 0; i < dsp::bandCount; ++i)
+        addToggle(layout, param::id(param::band(i), param::bandLift), "Band " + String(i + 1) + " Upward Compression", false);
     return layout;
 }
 
@@ -91,6 +93,7 @@ Processor::Processor()
         bandRefs[static_cast<std::size_t>(i)] = {
             state.getRawParameterValue(param::id(prefix, "low_hz")),
             state.getRawParameterValue(param::id(prefix, "high_hz")),
+            state.getRawParameterValue(param::id(prefix, param::bandLift)),
             dynamicsRefs(prefix)
         };
     }
@@ -130,7 +133,7 @@ dsp::Settings Processor::currentSettings() const
     for (std::size_t i = 0; i < bandRefs.size(); ++i)
     {
         const auto& refs = bandRefs[i];
-        settings.bands[i] = { read(refs.low), read(refs.high), refs.dynamics.read() };
+        settings.bands[i] = { read(refs.low), read(refs.high), refs.dynamics.read(), read(refs.lift) > 0.5f };
     }
     settings.limiter = { read(limitOn) > 0.5f, read(ceiling), read(drive), read(limitRelease) };
     return settings;
@@ -161,8 +164,12 @@ void Processor::prepareToPlay(double rate, int)
     meterRate.store(static_cast<float>(rate), std::memory_order_relaxed);
     inputPeak.store(0.0f, std::memory_order_relaxed);
     outputPeak.store(0.0f, std::memory_order_relaxed);
-    for (auto& meter : stageMeter)
-        meter.store(0.0f, std::memory_order_relaxed);
+    for (auto& meter : stageMeters)
+    {
+        meter.inputPeak.store(0.0f, std::memory_order_relaxed);
+        meter.gainDb.store(0.0f, std::memory_order_relaxed);
+        meter.outputPeak.store(0.0f, std::memory_order_relaxed);
+    }
     for (auto& meter : bandMeter)
         meter.store(0.0f, std::memory_order_relaxed);
 }
@@ -214,11 +221,21 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     }
 
     const auto decay = std::exp(-static_cast<float>(frames) / (0.25f * displayRate()));
-    inputPeak.store(std::max(in, read(&inputPeak) * decay), std::memory_order_relaxed);
-    outputPeak.store(std::max(out, read(&outputPeak) * decay), std::memory_order_relaxed);
+    const auto updatePeak = [decay](Atomic& meter, float level)
+    {
+        meter.store(std::max(level, read(&meter) * decay), std::memory_order_relaxed);
+    };
+    updatePeak(inputPeak, in);
+    updatePeak(outputPeak, out);
     const auto metering = rack.meters();
-    for (std::size_t i = 0; i < stageMeter.size(); ++i)
-        stageMeter[i].store(metering.stages[i], std::memory_order_relaxed);
+    for (std::size_t i = 0; i < stageMeters.size(); ++i)
+    {
+        auto& meter = stageMeters[i];
+        const auto& levels = metering.stages[i];
+        updatePeak(meter.inputPeak, levels.inputPeak);
+        meter.gainDb.store(levels.gainDb, std::memory_order_relaxed);
+        updatePeak(meter.outputPeak, levels.outputPeak);
+    }
     for (std::size_t i = 0; i < bandMeter.size(); ++i)
         bandMeter[i].store(metering.bands[i], std::memory_order_relaxed);
 }
@@ -226,8 +243,11 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
 dsp::Metering Processor::readMeters() const
 {
     dsp::Metering result;
-    for (std::size_t i = 0; i < stageMeter.size(); ++i)
-        result.stages[i] = read(&stageMeter[i]);
+    for (std::size_t i = 0; i < stageMeters.size(); ++i)
+    {
+        const auto& meter = stageMeters[i];
+        result.stages[i] = { read(&meter.inputPeak), read(&meter.gainDb), read(&meter.outputPeak) };
+    }
     for (std::size_t i = 0; i < bandMeter.size(); ++i)
         result.bands[i] = read(&bandMeter[i]);
     return result;
@@ -266,8 +286,25 @@ void Processor::getStateInformation(MemoryBlock& destination)
 void Processor::setStateInformation(const void* data, int size)
 {
     if (auto xml = getXmlFromBinary(data, size))
+    {
         if (xml->hasTagName(state.state.getType()))
-            state.replaceState(ValueTree::fromXml(*xml));
+        {
+            auto restored = ValueTree::fromXml(*xml);
+            for (int i = 0; i < dsp::bandCount; ++i)
+            {
+                const auto id = param::id(param::band(i), param::bandLift);
+                if (!restored.getChildWithProperty("id", id).isValid())
+                {
+                    // A preset saved before band lift must restore downward compression.
+                    ValueTree legacyMode { "PARAM" };
+                    legacyMode.setProperty("id", id, nullptr);
+                    legacyMode.setProperty("value", 0.0f, nullptr);
+                    restored.appendChild(legacyMode, nullptr);
+                }
+            }
+            state.replaceState(restored);
+        }
+    }
 }
 
 AudioProcessorParameter* Processor::getBypassParameter() const

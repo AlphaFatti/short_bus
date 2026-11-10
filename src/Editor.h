@@ -50,7 +50,7 @@ private:
         void paintButton(juce::Graphics&, bool hovered, bool pressed) override;
     };
 
-    enum class GraphControl { threshold, ceiling, makeup, ratio, range, bandLow, bandHigh, bandNode };
+    enum class GraphControl { threshold, ceiling, makeup, ratio, range, bandLow, bandHigh, bandNode, bandRange };
 
     struct GraphHit
     {
@@ -67,6 +67,7 @@ private:
         float startEdgeHz = 0.0f;
         float ratioDepthDb = 24.0f;
         float rangeDirection = 1.0f;
+        juce::RangedAudioParameter* liftParameter = nullptr;
     };
 
     void timerCallback() override;
@@ -74,7 +75,7 @@ private:
     void bindControls();
     void refreshSettings();
     void limitFrequencySlider(juce::Slider&, dsp::BandEdge);
-    void refreshFrequencySliders();
+    void refreshBandControls();
     float limitFrequency(std::size_t band, dsp::BandEdge, float requested) const;
     void animateBypassLights();
     void moveStage(int direction);
@@ -84,12 +85,15 @@ private:
     juce::Rectangle<float> transferArea() const;
     juce::Rectangle<float> spectrumArea() const;
     juce::Point<float> bandNode(int band) const;
+    juce::Rectangle<float> bandRangeBar(int band) const;
+    std::optional<int> bandAt(float x) const;
     std::optional<GraphHit> graphHit(juce::Point<float>) const;
     void finishGraphDrag();
     void drawBus(juce::Graphics&);
     void drawHeader(juce::Graphics&);
     void drawBumper(juce::Graphics&);
     void drawPeakMeter(juce::Graphics&, const char* name, float peak, int x, int y);
+    void drawVerticalMeter(juce::Graphics&, const char* name, juce::Rectangle<float>, float db, bool action = false);
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
     float frequencyToX(float) const;

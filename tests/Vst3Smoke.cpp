@@ -35,7 +35,7 @@ void set(AudioPluginInstance& plugin, const String& name, const String& value)
     target.setValueNotifyingHost(target.getValueForText(value));
 }
 
-float processConstant(AudioPluginInstance& plugin, int blocks)
+float processConstant(AudioPluginInstance& plugin, int blocks, float level = 0.62f)
 {
     AudioBuffer<float> block(2, blockSize);
     MidiBuffer midi;
@@ -44,7 +44,7 @@ float processConstant(AudioPluginInstance& plugin, int blocks)
         for (int channel = 0; channel < 2; ++channel)
         {
             auto* samples = block.getWritePointer(channel);
-            std::fill(samples, samples + blockSize, channel == 0 ? 0.62f : -0.31f);
+            std::fill(samples, samples + blockSize, channel == 0 ? level : -0.5f * level);
         }
         plugin.processBlock(block, midi);
     }
@@ -88,6 +88,10 @@ int main(int argc, char** argv)
 
     parameter(*plugin, "Strip Order").setValueNotifyingHost(1.0f / 23.0f);
     require(processConstant(*plugin, 180) > 1.20f, "Changing strip order must change processing");
+    parameter(*plugin, "5-Band Enabled").setValueNotifyingHost(1.0f);
+    parameter(*plugin, "Band 1 Upward Compression").setValueNotifyingHost(1.0f);
+    set(*plugin, "Band 1 Range", "6");
+    require(std::abs(processConstant(*plugin, 180, 0.01f) - 0.03981f) < 0.001f, "VST3 band lift failed");
     MemoryBlock saved;
     plugin->getStateInformation(saved);
     require(saved.getSize() > 0, "VST3 state block is empty");
@@ -97,6 +101,7 @@ int main(int argc, char** argv)
     recalled->setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
     recalled->prepareToPlay(rate, blockSize);
     require(processConstant(*recalled, 180) > 1.20f, "Restored VST3 state lost order or settings");
+    require(std::abs(processConstant(*recalled, 180, 0.01f) - 0.03981f) < 0.001f, "Restored VST3 state lost band lift");
     parameter(*recalled, "Bypass").setValueNotifyingHost(1.0f);
     require(std::abs(processConstant(*recalled, 80) - 0.62f) < 0.0001f, "VST3 bypass did not restore dry audio");
     recalled->releaseResources();

@@ -111,7 +111,7 @@ public:
         high.configure(std::tan(pi * edges.high / rate), edges.high < upper - 1.0f);
         edgeSlew = timeCoefficient(rate, 12.0f);
         settings.dynamics.enabled = stageEnabled && settings.dynamics.enabled;
-        envelope.configure(rate, settings.dynamics, Curve::compress);
+        envelope.configure(rate, settings.dynamics, settings.lift ? Curve::lift : Curve::compress);
     }
 
     Frame process(Frame detectorInput, Frame signal)
@@ -129,7 +129,7 @@ public:
 
         const auto db = envelope.tick(peak(isolated));
         // The matched shelves restore unity away from the band and at zero gain change.
-        const auto rootGain = db < 0.0f ? gainFromDb(0.5f * db) : 1.0f;
+        const auto rootGain = std::abs(db) > 0.0f ? gainFromDb(0.5f * db) : 1.0f;
         const auto inverse = 1.0f / rootGain;
         const auto delta = rootGain * rootGain - 1.0f;
         const auto inverseDelta = inverse * inverse - 1.0f;
@@ -137,9 +137,9 @@ public:
         {
             const auto input = signal[channel];
             const auto bottom = shelfLow[channel].lowpass(input, low.coefficient * rootGain);
-            const auto cut = input + delta * (input - bottom);
-            const auto top = shelfHigh[channel].lowpass(cut, high.coefficient * inverse);
-            const auto bounded = cut + high.mix * inverseDelta * (cut - top);
+            const auto shelved = input + delta * (input - bottom);
+            const auto top = shelfHigh[channel].lowpass(shelved, high.coefficient * inverse);
+            const auto bounded = shelved + high.mix * inverseDelta * (shelved - top);
             const auto lowPass = lowOnly[channel].lowpass(input, high.coefficient * inverse);
             const auto shelf = input + high.mix * delta * lowPass;
             signal[channel] = shelf + low.mix * (bounded - shelf);

@@ -44,7 +44,7 @@ void dynamicsCurves()
     }
 }
 
-float toneLevel(BandSettings settings, float frequency, int rate, bool enabled)
+float toneLevel(BandSettings settings, float frequency, int rate, bool enabled, float amplitude = 0.5f)
 {
     constexpr float pi = 3.14159265358979323846f;
     Band band;
@@ -52,7 +52,7 @@ float toneLevel(BandSettings settings, float frequency, int rate, bool enabled)
     double in = 0.0, out = 0.0;
     for (int i = 0; i < rate; ++i)
     {
-        const auto tone = 0.5f * std::sin(2.0f * pi * frequency * static_cast<float>(i) / static_cast<float>(rate));
+        const auto tone = amplitude * std::sin(2.0f * pi * frequency * static_cast<float>(i) / static_cast<float>(rate));
         const Frame input { tone, -tone * 0.25f };
         const auto output = band.process(input, input);
         check(std::isfinite(output[0]), "band output finite");
@@ -81,6 +81,16 @@ void movableBands()
         check(center < -4.0f && center >= -6.01f, "in-band compression");
         check(std::abs(toneLevel(settings, 40.0f, rate, true)) < 0.3f, "below-band unity");
         check(std::abs(toneLevel(settings, 12000.0f, rate, true)) < 0.6f, "above-band unity");
+
+        auto lift = settings;
+        lift.lift = true;
+        lift.dynamics.threshold = -24.0f;
+        const auto boosted = toneLevel(lift, 950.0f, rate, true, 0.01f);
+        check(boosted > 4.0f && boosted <= 6.01f, "quiet in-band signal lifts within range");
+        check(std::abs(toneLevel(lift, 950.0f, rate, true)) < 0.01f, "lift leaves above-threshold signal at unity");
+        check(std::abs(toneLevel(lift, 40.0f, rate, true, 0.01f)) < 0.6f, "lift targets the selected band");
+        lift.dynamics.range = 0.0f;
+        check(toneLevel(lift, 950.0f, rate, true, 0.01f) == 0.0f, "zero signed range is unity");
     }
 
     Band moving;
@@ -203,10 +213,29 @@ void liveReorder()
     settings.limiter = { true, -3.0f, 0.0f, 30.0f };
     rack.configure(settings);
     const Frame input { 0.62f, -0.31f };
+    const auto checkMeters = [&]
+    {
+        rack.configure(settings);
+        check(rack.meters().stages[index(Stage::lowLevel)].inputPeak == 0.0f, "stage peaks reset for each block");
+        auto last = 0.0f;
+        for (int i = 0; i < 256; ++i)
+            last = rack.process(input)[0];
+        const auto stages = rack.meters().stages;
+        const auto route = orders[static_cast<std::size_t>(settings.order)];
+        check(stages[index(route.front())].inputPeak == input[0], "first stage meters rack input");
+        for (std::size_t i = 1; i < route.size(); ++i)
+            check(stages[index(route[i - 1])].outputPeak == stages[index(route[i])].inputPeak,
+                "each stage meters the previous stage's output");
+        check(std::abs(stages[index(route.back())].outputPeak - last) < 0.001f, "last stage meters rack output");
+        const auto comp = stages[index(Stage::compressor)];
+        check(comp.outputPeak > comp.inputPeak && std::abs(comp.gainDb) < 1.0e-5f,
+            "makeup affects output peak without reporting compression");
+    };
     for (int i = 0; i < 48000; ++i)
         rack.process(input);
     const auto before = rack.process(input)[0];
     check(std::abs(before - gainFromDb(-3.0f)) < 0.001f, "limiter last");
+    checkMeters();
     settings.order = 1;
     rack.configure(settings);
     auto previous = before;
@@ -218,6 +247,7 @@ void liveReorder()
         previous = output[0];
     }
     check(previous > 1.2f, "makeup can raise final level when limiter is earlier");
+    checkMeters();
 
     for (int block = 0; block < 220; ++block)
     {

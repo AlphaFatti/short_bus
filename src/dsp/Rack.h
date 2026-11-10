@@ -68,6 +68,7 @@ private:
         Broadband lowLevel, compressor;
         std::array<Band, bandCount> bands;
         Limiter limiter;
+        std::array<StageMetering, stageCount> stageMeters {};
     };
 
     std::array<Chain, 2> chains;

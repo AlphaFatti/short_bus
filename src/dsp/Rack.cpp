@@ -85,27 +85,34 @@ void Rack::Chain::prepare(float rate, int delay)
     lowLevel = {};
     compressor = {};
     bands = {};
+    stageMeters = {};
     limiter.prepare(rate, delay);
 }
 
 void Rack::Chain::configure(const Settings& settings)
 {
+    stageMeters = {};
     lowLevel.configure(sampleRate, settings.lowLevel,
         settings.lowMode == LowMode::expand ? Curve::expand : Curve::lift);
     compressor.configure(sampleRate, settings.compressor, Curve::compress);
     const auto spans = orderedBandSpans(settings.bands, sampleRate);
     for (std::size_t i = 0; i < bands.size(); ++i)
     {
-        const auto span = spans[i];
-        bands[i].configure(sampleRate, { span.low, span.high, settings.bands[i].dynamics }, settings.multiEnabled);
+        auto band = settings.bands[i];
+        band.lowHz = spans[i].low;
+        band.highHz = spans[i].high;
+        bands[i].configure(sampleRate, band, settings.multiEnabled);
     }
     limiter.configure(settings.limiter);
 }
 
 Frame Rack::Chain::process(Frame input)
 {
+    auto amplitude = peak(input);
     for (auto stage : order)
     {
+        auto& meter = stageMeters[index(stage)];
+        meter.inputPeak = std::max(meter.inputPeak, amplitude);
         switch (stage)
         {
             case Stage::lowLevel: input = lowLevel.process(input); break;
@@ -119,21 +126,24 @@ Frame Rack::Chain::process(Frame input)
             case Stage::compressor: input = compressor.process(input); break;
             case Stage::limiter: input = limiter.process(input); break;
         }
+        amplitude = peak(input);
+        meter.outputPeak = std::max(meter.outputPeak, amplitude);
     }
     return input;
 }
 
 Metering Rack::Chain::meters() const
 {
-    Metering result;
-    result.stages[index(Stage::lowLevel)] = lowLevel.meter();
-    result.stages[index(Stage::compressor)] = compressor.meter();
-    result.stages[index(Stage::limiter)] = limiter.meter();
+    Metering result { stageMeters, {} };
+    result.stages[index(Stage::lowLevel)].gainDb = lowLevel.meter();
+    result.stages[index(Stage::compressor)].gainDb = compressor.meter();
+    result.stages[index(Stage::limiter)].gainDb = limiter.meter();
+    auto& strongest = result.stages[index(Stage::multiband)].gainDb;
     for (std::size_t i = 0; i < bands.size(); ++i)
     {
         result.bands[i] = bands[i].meter();
-        auto& deepest = result.stages[index(Stage::multiband)];
-        deepest = std::min(deepest, result.bands[i]);
+        if (std::abs(result.bands[i]) > std::abs(strongest))
+            strongest = result.bands[i];
     }
     return result;
 }

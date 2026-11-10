@@ -15,6 +15,7 @@ inline constexpr auto low = "low";
 inline constexpr auto multi = "multi";
 inline constexpr auto comp = "comp";
 inline constexpr auto limit = "limit";
+inline constexpr auto bandLift = "lift";
 
 inline juce::String id(const juce::String& prefix, const char* control) { return prefix + "_" + control; }
 inline juce::String band(int i) { return "band" + juce::String(i + 1); }
@@ -73,8 +74,12 @@ private:
     };
     struct BandRefs
     {
-        Atomic *low, *high;
+        Atomic *low, *high, *lift;
         DynamicsRefs dynamics;
+    };
+    struct StageMeter
+    {
+        Atomic inputPeak {}, gainDb {}, outputPeak {};
     };
 
     static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
@@ -86,7 +91,7 @@ private:
     Atomic *mode = nullptr, *order = nullptr, *bypass = nullptr, *multiOn = nullptr;
     Atomic *limitOn = nullptr, *ceiling = nullptr, *drive = nullptr, *limitRelease = nullptr;
     dsp::Rack rack;
-    std::array<Atomic, dsp::stageCount> stageMeter {};
+    std::array<StageMeter, dsp::stageCount> stageMeters {};
     std::array<Atomic, dsp::bandCount> bandMeter {};
     Atomic inputPeak {}, outputPeak {}, meterRate { 48000.0f };
     juce::AbstractFifo spectrumFifo { fftSize * 4 };
