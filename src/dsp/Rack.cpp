@@ -106,7 +106,7 @@ void Rack::Chain::configure(const Settings& settings)
     limiter.configure(settings.limiter);
 }
 
-Frame Rack::Chain::process(Frame input)
+Frame Rack::Chain::process(Frame input, int tap, Frame* tapped)
 {
     auto amplitude = peak(input);
     for (auto stage : order)
@@ -128,6 +128,8 @@ Frame Rack::Chain::process(Frame input)
         }
         amplitude = peak(input);
         meter.outputPeak = std::max(meter.outputPeak, amplitude);
+        if (tapped != nullptr && --tap == 0)
+            *tapped = input;
     }
     return input;
 }
@@ -191,10 +193,10 @@ void Rack::configure(const Settings& settings)
         pending.configure(settings);
 }
 
-Frame Rack::process(Frame input)
+Frame Rack::process(Frame input, int tap, Frame* tapped)
 {
     const auto dry = dryDelay.push(input);
-    auto wet = chains[static_cast<std::size_t>(active)].process(input);
+    auto wet = chains[static_cast<std::size_t>(active)].process(input, tap, tapped);
     if (fadeLeft > 0)
     {
         const auto upcoming = chains[static_cast<std::size_t>(1 - active)].process(input);

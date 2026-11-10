@@ -11,6 +11,8 @@ namespace
 using Layout = AudioProcessorValueTreeState::ParameterLayout;
 // Include rounding at the default limiter ceiling.
 const auto brakeThreshold = dsp::gainFromDb(-1.0f) - 1.0e-6f;
+constexpr auto referenceProperty = "tonalReference";
+constexpr auto referenceBandsProperty = "tonalReferenceBands";
 
 void addFloat(Layout& layout, String id, String title, NormalisableRange<float> range, float initial)
 {
@@ -40,6 +42,33 @@ void addDynamics(Layout& layout, String prefix, String name, dsp::DynamicsSettin
 }
 
 float read(const std::atomic<float>* value) { return value->load(std::memory_order_relaxed); }
+
+void setDiscreteValue(AudioProcessorValueTreeState& state, const char* id, int value)
+{
+    auto* parameter = state.getParameter(id);
+    parameter->beginChangeGesture();
+    parameter->setValueNotifyingHost(parameter->convertTo0to1(static_cast<float>(value)));
+    parameter->endChangeGesture();
+}
+
+std::optional<dsp::TonalReference> readReference(const ValueTree& restored)
+{
+    const auto count = static_cast<int>(restored.getProperty(referenceBandsProperty, 0));
+    const auto values = StringArray::fromTokens(restored.getProperty(referenceProperty).toString(), " ", "");
+    if (count < 1 || count > dsp::tonalBandCount || values.size() != dsp::tonalBandCount)
+        return {};
+    dsp::TonalCurve power {};
+    for (int i = 0; i < count; ++i)
+    {
+        const auto value = values[i].getFloatValue();
+        if (!std::isfinite(value) || value < 0.0f || value > 1.0f)
+            return {};
+        power[static_cast<std::size_t>(i)] = value;
+    }
+    if (dsp::tonalEnergy(power) <= 0.0f)
+        return {};
+    return dsp::TonalReference { dsp::normalizedTone(power), count };
+}
 } // namespace
 
 AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
@@ -79,6 +108,12 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
     addFloat(layout, param::id(param::limit, "release"), "Limiter Release", {20.0f, 1000.0f, 1.0f, 0.45f}, 100.0f);
     for (int i = 0; i < dsp::bandCount; ++i)
         addToggle(layout, param::id(param::band(i), param::bandLift), "Band " + String(i + 1) + " Upward Compression", false);
+    layout.add(std::make_unique<AudioParameterInt>(ParameterID { param::rtaPosition, 1 }, "RTA Position",
+                                                   0, dsp::stageCount, dsp::stageCount));
+    layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::rtaTarget, 1 }, "RTA Target",
+        StringArray { "Balanced", "Bass-forward", "Speech", "Captured" }, 0));
+    layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::rtaView, 1 }, "RTA View",
+        StringArray { "Fine", "Broad" }, 0));
     return layout;
 }
 
@@ -101,6 +136,7 @@ Processor::Processor()
     }
     mode = state.getRawParameterValue(param::mode);
     order = state.getRawParameterValue(param::order);
+    rtaSlot = state.getRawParameterValue(param::rtaPosition);
     bypass = state.getRawParameterValue(param::bypass);
     multiOn = state.getRawParameterValue(param::id(param::multi, "enabled"));
     limitOn = state.getRawParameterValue(param::id(param::limit, "enabled"));
@@ -146,10 +182,29 @@ void Processor::setStripOrder(const dsp::Order& requested)
     const auto position = std::find(dsp::orders.begin(), dsp::orders.end(), requested);
     if (position == dsp::orders.end())
         return;
-    auto* parameter = state.getParameter(param::order);
-    parameter->beginChangeGesture();
-    parameter->setValueNotifyingHost(parameter->convertTo0to1(static_cast<float>(position - dsp::orders.begin())));
-    parameter->endChangeGesture();
+    setDiscreteValue(state, param::order, static_cast<int>(position - dsp::orders.begin()));
+}
+
+int Processor::rtaPosition() const
+{
+    return std::clamp(roundToInt(read(rtaSlot)), 0, dsp::stageCount);
+}
+
+void Processor::setRtaPosition(int position)
+{
+    setDiscreteValue(state, param::rtaPosition, position);
+}
+
+std::optional<dsp::TonalReference> Processor::tonalReference() const
+{
+    const ScopedLock lock(referenceLock);
+    return reference;
+}
+
+void Processor::setTonalReference(std::optional<dsp::TonalReference> next)
+{
+    const ScopedLock lock(referenceLock);
+    reference = std::move(next);
 }
 
 bool Processor::isBusesLayoutSupported(const BusesLayout& layout) const
@@ -164,6 +219,7 @@ void Processor::prepareToPlay(double rate, int)
     rack.prepare(rate);
     setLatencySamples(rack.latency());
     meterRate.store(static_cast<float>(rate), std::memory_order_relaxed);
+    spectrumEpoch.fetch_add(1, std::memory_order_relaxed);
     inputPeak.store(0.0f, std::memory_order_relaxed);
     outputPeak.store(0.0f, std::memory_order_relaxed);
     hostBypassed.store(false, std::memory_order_relaxed);
@@ -204,7 +260,15 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     auto settings = currentSettings();
     settings.bypass = settings.bypass || hostBypass;
     rack.configure(settings);
-    const auto region = spectrumFifo.write(spectrumRequested.load(std::memory_order_relaxed) ? frames : 0);
+    const auto view = spectrumRequested.load(std::memory_order_relaxed);
+    const auto position = view == SpectrumView::tonal ? rtaPosition() : dsp::stageCount;
+    const auto key = spectrumKey(view, settings.order, position, settings.bypass);
+    const auto tap = settings.bypass && position < dsp::stageCount ? 0 : position;
+    const auto capture = view != SpectrumView::none && (view != SpectrumView::tonal || !rack.isReordering());
+    const auto region = spectrumFifo.write(capture ? frames : 0);
+    const auto captured = region.blockSize1 + region.blockSize2;
+    const auto sequence = spectrumSequence;
+    spectrumSequence += static_cast<std::uint32_t>(frames);
     auto* left = audio.getWritePointer(0);
     auto* right = audio.getNumChannels() == 2 ? audio.getWritePointer(1) : nullptr;
     float in = 0.0f, out = 0.0f;
@@ -213,16 +277,20 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     {
         const auto l = finite(left[i]);
         const dsp::Frame input { l, right != nullptr ? finite(right[i]) : l };
-        const auto output = rack.process(input);
+        dsp::Frame tapped {};
+        const auto interstage = i < captured && tap > 0 && tap < dsp::stageCount;
+        const auto output = rack.process(input, tap, interstage ? &tapped : nullptr);
         in = std::max(in, dsp::peak(input));
         out = std::max(out, dsp::peak(output));
         left[i] = output[0];
         if (right != nullptr)
             right[i] = output[1];
-        if (i < region.blockSize1)
-            spectrum[static_cast<std::size_t>(region.startIndex1 + i)] = output;
-        else if (i < region.blockSize1 + region.blockSize2)
-            spectrum[static_cast<std::size_t>(region.startIndex2 + i - region.blockSize1)] = output;
+        if (i < captured)
+        {
+            const auto slot = i < region.blockSize1 ? region.startIndex1 + i : region.startIndex2 + i - region.blockSize1;
+            const auto signal = interstage ? tapped : (tap == 0 ? input : output);
+            spectrum[static_cast<std::size_t>(slot)] = { signal, key, sequence + static_cast<std::uint32_t>(i) };
+        }
     }
 
     const auto decay = std::exp(-static_cast<float>(frames) / (0.25f * displayRate()));
@@ -270,28 +338,59 @@ bool Processor::isBypassed() const
     return read(bypass) > 0.5f || hostBypassed.load(std::memory_order_relaxed);
 }
 
-bool Processor::readSpectrum(float* left, float* right)
+std::uint32_t Processor::spectrumKey(SpectrumView view, int orderIndex, int position, bool bypassed) const
+{
+    const auto source = view == SpectrumView::tonal
+        ? 2 + 2 * (orderIndex * (dsp::stageCount + 1) + position) + static_cast<int>(bypassed) : 1;
+    return spectrumEpoch.load(std::memory_order_relaxed) * 256u + static_cast<std::uint32_t>(source);
+}
+
+bool Processor::readSpectrum(float* left, float* right, int count, std::uint32_t key)
 {
     const auto available = spectrumFifo.getNumReady();
-    if (available < fftSize)
+    if (available < count)
         return false;
-    const auto region = spectrumFifo.read(available);
-    const auto skip = available - fftSize;
-    for (int i = 0; i < fftSize; ++i)
+    int first, firstSize, second, secondSize;
+    spectrumFifo.prepareToRead(available, first, firstSize, second, secondSize);
+    const auto sampleAt = [&](int offset) -> const SpectrumSample&
     {
-        const auto offset = skip + i;
-        const auto position = offset < region.blockSize1
-            ? region.startIndex1 + offset : region.startIndex2 + offset - region.blockSize1;
-        const auto frame = spectrum[static_cast<std::size_t>(position)];
-        left[i] = frame[0];
-        right[i] = frame[1];
+        return spectrum[static_cast<std::size_t>(offset < firstSize ? first + offset : second + offset - firstSize)];
+    };
+    const auto skip = available - count;
+    const auto end = sampleAt(available - 1).sequence;
+    for (int i = count - 1; i >= 0; --i)
+    {
+        const auto& sample = sampleAt(skip + i);
+        if (sample.key != key || end - sample.sequence != static_cast<std::uint32_t>(count - 1 - i))
+        {
+            // Keep the fresh tail for the next window and discard the old or discontinuous source.
+            spectrumFifo.finishedRead(skip + i + 1);
+            return false;
+        }
+        left[i] = sample.signal[0];
+        right[i] = sample.signal[1];
     }
+    spectrumFifo.finishedRead(skip + count / 4);
     return true;
 }
 
 void Processor::getStateInformation(MemoryBlock& destination)
 {
-    if (auto xml = state.copyState().createXml())
+    auto snapshot = state.copyState();
+    if (const auto captured = tonalReference())
+    {
+        StringArray values;
+        for (const auto value : captured->power)
+            values.add(String(value, 10));
+        snapshot.setProperty(referenceProperty, values.joinIntoString(" "), nullptr);
+        snapshot.setProperty(referenceBandsProperty, captured->bands, nullptr);
+    }
+    else
+    {
+        snapshot.removeProperty(referenceProperty, nullptr);
+        snapshot.removeProperty(referenceBandsProperty, nullptr);
+    }
+    if (auto xml = snapshot.createXml())
         copyXmlToBinary(*xml, destination);
 }
 
@@ -302,18 +401,22 @@ void Processor::setStateInformation(const void* data, int size)
         if (xml->hasTagName(state.state.getType()))
         {
             auto restored = ValueTree::fromXml(*xml);
-            for (int i = 0; i < dsp::bandCount; ++i)
+            const auto restoreDefault = [&](const String& id)
             {
-                const auto id = param::id(param::band(i), param::bandLift);
                 if (!restored.getChildWithProperty("id", id).isValid())
                 {
-                    // A preset saved before band lift must restore downward compression.
-                    ValueTree legacyMode { "PARAM" };
-                    legacyMode.setProperty("id", id, nullptr);
-                    legacyMode.setProperty("value", 0.0f, nullptr);
-                    restored.appendChild(legacyMode, nullptr);
+                    auto* parameter = state.getParameter(id);
+                    ValueTree defaultState { "PARAM" };
+                    defaultState.setProperty("id", id, nullptr);
+                    defaultState.setProperty("value", parameter->convertFrom0to1(parameter->getDefaultValue()), nullptr);
+                    restored.appendChild(defaultState, nullptr);
                 }
-            }
+            };
+            for (int i = 0; i < dsp::bandCount; ++i)
+                restoreDefault(param::id(param::band(i), param::bandLift));
+            for (const auto* id : { param::rtaPosition, param::rtaTarget, param::rtaView })
+                restoreDefault(id);
+            setTonalReference(readReference(restored));
             state.replaceState(restored);
         }
     }

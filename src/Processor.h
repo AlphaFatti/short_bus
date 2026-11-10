@@ -2,7 +2,9 @@
 #pragma once
 
 #include "dsp/Rack.h"
+#include "dsp/TonalBalance.h"
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <optional>
 
 namespace shortbus
 {
@@ -16,6 +18,9 @@ inline constexpr auto multi = "multi";
 inline constexpr auto comp = "comp";
 inline constexpr auto limit = "limit";
 inline constexpr auto bandLift = "lift";
+inline constexpr auto rtaPosition = "rta_position";
+inline constexpr auto rtaTarget = "rta_target";
+inline constexpr auto rtaView = "rta_view";
 
 inline juce::String id(const juce::String& prefix, const char* control) { return prefix + "_" + control; }
 inline juce::String band(int i) { return "band" + juce::String(i + 1); }
@@ -29,8 +34,11 @@ inline juce::String stage(dsp::Stage stage)
 class Processor final : public juce::AudioProcessor
 {
 public:
+    enum class SpectrumView { none, output, tonal };
     static constexpr int fftOrder = 11;
     static constexpr int fftSize = 1 << fftOrder;
+    static constexpr int tonalFftOrder = 14;
+    static constexpr int tonalFftSize = 1 << tonalFftOrder;
 
     Processor();
     using AudioProcessor::processBlock;
@@ -57,15 +65,21 @@ public:
 
     dsp::Settings currentSettings() const;
     void setStripOrder(const dsp::Order&);
+    int rtaPosition() const;
+    void setRtaPosition(int position);
+    std::optional<dsp::TonalReference> tonalReference() const;
+    void setTonalReference(std::optional<dsp::TonalReference>);
     dsp::Metering readMeters() const;
     std::array<float, 2> readPeaks() const;
     bool isBypassed() const;
     bool consumeOutputPeakEvent() { return outputPeakPending.exchange(false, std::memory_order_relaxed); }
-    bool readSpectrum(float* left, float* right);
+    std::uint32_t spectrumKey(SpectrumView, int orderIndex, int position, bool bypassed) const;
+    bool readSpectrum(float* left, float* right, int count, std::uint32_t key);
+    void discardSpectrum() { spectrumFifo.finishedRead(spectrumFifo.getNumReady()); }
     float displayRate() const { return meterRate.load(std::memory_order_relaxed); }
 
     juce::AudioProcessorValueTreeState state;
-    std::atomic<bool> spectrumRequested { false };
+    std::atomic<SpectrumView> spectrumRequested { SpectrumView::none };
 
 private:
     using Atomic = std::atomic<float>;
@@ -83,6 +97,11 @@ private:
     {
         Atomic inputPeak {}, gainDb {}, outputPeak {};
     };
+    struct SpectrumSample
+    {
+        dsp::Frame signal;
+        std::uint32_t key, sequence;
+    };
 
     static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
     DynamicsRefs dynamicsRefs(const juce::String& prefix, bool withMakeup = false);
@@ -91,13 +110,18 @@ private:
     DynamicsRefs lowRefs {}, compRefs {};
     std::array<BandRefs, dsp::bandCount> bandRefs {};
     Atomic *mode = nullptr, *order = nullptr, *bypass = nullptr, *multiOn = nullptr;
+    Atomic* rtaSlot = nullptr;
     Atomic *limitOn = nullptr, *ceiling = nullptr, *drive = nullptr, *limitRelease = nullptr;
     dsp::Rack rack;
     std::array<StageMeter, dsp::stageCount> stageMeters {};
     std::array<Atomic, dsp::bandCount> bandMeter {};
     Atomic inputPeak {}, outputPeak {}, meterRate { 48000.0f };
     std::atomic<bool> hostBypassed { false }, outputPeakPending { false };
-    juce::AbstractFifo spectrumFifo { fftSize * 4 };
-    std::array<dsp::Frame, fftSize * 4> spectrum {};
+    juce::AbstractFifo spectrumFifo { tonalFftSize * 2 };
+    std::array<SpectrumSample, tonalFftSize * 2> spectrum {};
+    std::atomic<std::uint32_t> spectrumEpoch { 0 };
+    std::uint32_t spectrumSequence = 0;
+    mutable juce::CriticalSection referenceLock;
+    std::optional<dsp::TonalReference> reference;
 };
 } // namespace shortbus

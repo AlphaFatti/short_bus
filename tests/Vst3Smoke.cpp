@@ -92,6 +92,10 @@ int main(int argc, char** argv)
     parameter(*plugin, "Band 1 Upward Compression").setValueNotifyingHost(1.0f);
     set(*plugin, "Band 1 Range", "6");
     require(std::abs(processConstant(*plugin, 180, 0.01f) - 0.03981f) < 0.001f, "VST3 band lift failed");
+    set(*plugin, "RTA Position", "2");
+    set(*plugin, "RTA Target", "Speech");
+    set(*plugin, "RTA View", "Broad");
+    require(std::abs(processConstant(*plugin, 20, 0.01f) - 0.03981f) < 0.001f, "moving RTA changed audio");
     MemoryBlock saved;
     plugin->getStateInformation(saved);
     require(saved.getSize() > 0, "VST3 state block is empty");
@@ -100,6 +104,9 @@ int main(int argc, char** argv)
     auto recalled = open();
     recalled->setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
     recalled->prepareToPlay(rate, blockSize);
+    require(std::abs(parameter(*recalled, "RTA Position").getValue() - 0.5f) < 0.0001f, "RTA position failed to recall");
+    require(std::abs(parameter(*recalled, "RTA Target").getValue() - 2.0f / 3.0f) < 0.0001f, "RTA target failed to recall");
+    require(parameter(*recalled, "RTA View").getValue() > 0.99f, "RTA view failed to recall");
     require(processConstant(*recalled, 180) > 1.20f, "Restored VST3 state lost order or settings");
     require(std::abs(processConstant(*recalled, 180, 0.01f) - 0.03981f) < 0.001f, "Restored VST3 state lost band lift");
     parameter(*recalled, "Bypass").setValueNotifyingHost(1.0f);
