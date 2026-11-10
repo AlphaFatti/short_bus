@@ -7,6 +7,7 @@
 
 namespace shortbus
 {
+class PresetBrowser;
 class Editor final : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -38,10 +39,15 @@ private:
     {
         StageButton() : Button(juce::String()) {}
         void paintButton(juce::Graphics&, bool hovered, bool pressed) override;
+        void mouseDown(const juce::MouseEvent&) override;
+        void mouseDrag(const juce::MouseEvent&) override;
+        void mouseUp(const juce::MouseEvent&) override;
+        std::function<void(const juce::MouseEvent&, int)> onReorder;
         int position = 0;
         float gain = 0.0f;
         bool enabled = false;
         bool isAnalyzer = false;
+        bool dragging = false;
     };
 
     struct BypassButton final : juce::Button
@@ -49,6 +55,17 @@ private:
         BypassButton();
         bool hitTest(int x, int y) override;
         void paintButton(juce::Graphics&, bool hovered, bool pressed) override;
+    };
+    struct PresetButton final : juce::Button
+    {
+        PresetButton() : Button("Presets") {}
+        void paintButton(juce::Graphics&, bool, bool) override;
+    };
+    struct TileDrag
+    {
+        std::size_t tile;
+        Processor::TileOrder origin, preview;
+        bool active = false, valid = false;
     };
 
     enum class GraphControl { threshold, ceiling, makeup, ratio, range, bandLow, bandHigh, bandNode, bandRange };
@@ -80,6 +97,11 @@ private:
     float limitFrequency(std::size_t band, dsp::BandEdge, float requested) const;
     void animateLights();
     void moveStage(int direction);
+    void reorderTile(std::size_t, const juce::MouseEvent&, int phase);
+    void finishTileDrag(bool commit);
+    void togglePresets();
+    void animatePresetDoor(double elapsedMs);
+    juce::Rectangle<int> busBounds() const;
     void applyOrder();
     void updateSpectrum();
     void updateTonalSpectrum();
@@ -140,6 +162,11 @@ private:
     std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink;
     std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink;
     std::optional<GraphDrag> graphDrag;
+    std::optional<TileDrag> tileDrag;
+    PresetButton presetsButton;
+    std::unique_ptr<PresetBrowser> presetBrowser;
+    bool presetDoorTarget = false, presetDoorAllocated = false;
+    float presetDoorProgress = 0.0f;
 
     juce::dsp::FFT fft { Processor::fftOrder };
     juce::dsp::WindowingFunction<float> window { Processor::fftSize,

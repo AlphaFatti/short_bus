@@ -13,6 +13,7 @@ using Layout = AudioProcessorValueTreeState::ParameterLayout;
 const auto brakeThreshold = dsp::gainFromDb(-1.0f) - 1.0e-6f;
 constexpr auto referenceProperty = "tonalReference";
 constexpr auto referenceBandsProperty = "tonalReferenceBands";
+constexpr auto recallSafesProperty = "presetRecallSafes";
 
 void addFloat(Layout& layout, String id, String title, NormalisableRange<float> range, float initial)
 {
@@ -46,8 +47,11 @@ float read(const std::atomic<float>* value) { return value->load(std::memory_ord
 void setDiscreteValue(AudioProcessorValueTreeState& state, const char* id, int value)
 {
     auto* parameter = state.getParameter(id);
+    const auto normalised = parameter->convertTo0to1(static_cast<float>(value));
+    if (std::abs(parameter->getValue() - normalised) < 1.0e-7f)
+        return;
     parameter->beginChangeGesture();
-    parameter->setValueNotifyingHost(parameter->convertTo0to1(static_cast<float>(value)));
+    parameter->setValueNotifyingHost(normalised);
     parameter->endChangeGesture();
 }
 
@@ -177,6 +181,116 @@ dsp::Settings Processor::currentSettings() const
     return settings;
 }
 
+Processor::TileOrder Processor::tileOrder() const
+{
+    const auto settings = currentSettings();
+    const auto& route = dsp::orders[static_cast<std::size_t>(settings.order)];
+    const auto tap = static_cast<std::size_t>(rtaPosition());
+    TileOrder tiles {};
+    auto stage = route.begin();
+    for (std::size_t i = 0; i < tiles.size(); ++i)
+        tiles[i] = i == tap ? static_cast<std::size_t>(dsp::stageCount) : dsp::index(*stage++);
+    return tiles;
+}
+
+void Processor::setTileOrder(const TileOrder& tiles)
+{
+    auto sorted = tiles;
+    std::sort(sorted.begin(), sorted.end());
+    for (std::size_t i = 0; i < sorted.size(); ++i)
+        if (sorted[i] != i)
+            return;
+    dsp::Order route {};
+    auto next = route.begin();
+    int tap = 0;
+    for (std::size_t i = 0; i < tiles.size(); ++i)
+    {
+        if (tiles[i] == dsp::stageCount)
+            tap = static_cast<int>(i);
+        else
+            *next++ = static_cast<dsp::Stage>(tiles[i]);
+    }
+    const ScopedLock lock(presetLock);
+    settingsRevision.fetch_add(1, std::memory_order_acq_rel);
+    const ScopeGuard finished { [this] { settingsRevision.fetch_add(1, std::memory_order_release); } };
+    setStripOrder(route);
+    setRtaPosition(tap);
+}
+
+ValueTree Processor::presetState(PresetScope scope)
+{
+    MemoryBlock data;
+    getStateInformation(data);
+    auto snapshot = ValueTree::fromXml(*getXmlFromBinary(data.getData(), static_cast<int>(data.getSize())));
+    snapshot.removeProperty(recallSafesProperty, nullptr);
+    for (int i = snapshot.getNumChildren(); --i >= 0;)
+        if (!presetIncludesParameter(scope, snapshot.getChild(i).getProperty("id").toString()))
+            snapshot.removeChild(i, nullptr);
+    if (scope != PresetScope::bus && scope != PresetScope::rta)
+    {
+        snapshot.removeProperty(referenceProperty, nullptr);
+        snapshot.removeProperty(referenceBandsProperty, nullptr);
+    }
+    return snapshot;
+}
+
+Result Processor::applyPreset(const ValueTree& preset, PresetScope scope)
+{
+    if (!preset.hasType(state.state.getType()))
+        return Result::fail("The preset settings are incompatible.");
+    struct Change { RangedAudioParameter* parameter; float value; };
+    std::vector<Change> changes;
+    int recognized = 0;
+    const auto safeMask = scope == PresetScope::bus ? presetRecallSafes() : 0u;
+    const auto isSafe = [safeMask](const String& id)
+    {
+        if (id == param::order || id == param::rtaPosition)
+            return (safeMask & (1u << 4)) != 0;
+        if (id.startsWith("rta_"))
+            return (safeMask & (1u << 5)) != 0;
+        if (id == param::bypass)
+            return (safeMask & (1u << 6)) != 0;
+        for (int i = 0; i < dsp::stageCount; ++i)
+            if (presetIncludesParameter(static_cast<PresetScope>(i), id))
+                return (safeMask & (1u << i)) != 0;
+        return false;
+    };
+    for (const auto& child : preset)
+    {
+        const auto id = child.getProperty("id").toString();
+        auto* parameter = state.getParameter(id);
+        if (parameter == nullptr || !presetIncludesParameter(scope, id))
+            continue;
+        ++recognized;
+        const auto text = child.getProperty("value").toString().trim();
+        auto end = text.getCharPointer();
+        const auto start = end;
+        const auto value = static_cast<float>(CharacterFunctions::readDoubleValue(end));
+        const auto& range = parameter->getNormalisableRange();
+        if (end == start || !end.isEmpty() || !std::isfinite(value) || value < range.start - 0.001f || value > range.end + 0.001f)
+            return Result::fail("The preset contains an invalid value for " + parameter->name + ".");
+        if (!isSafe(id))
+            changes.push_back({ parameter, parameter->convertTo0to1(value) });
+    }
+    if (recognized == 0)
+        return Result::fail("The preset is empty.");
+    const auto captured = readReference(preset);
+    if (preset.hasProperty(referenceProperty) && !captured)
+        return Result::fail("The captured reference in the preset is invalid.");
+    const ScopedLock lock(presetLock);
+    settingsRevision.fetch_add(1, std::memory_order_acq_rel);
+    const ScopeGuard finished { [this] { settingsRevision.fetch_add(1, std::memory_order_release); } };
+    for (const auto& change : changes)
+    {
+        change.parameter->beginChangeGesture();
+        change.parameter->setValueNotifyingHost(change.value);
+        change.parameter->endChangeGesture();
+    }
+    if ((scope == PresetScope::bus || scope == PresetScope::rta) && (safeMask & (1u << 5)) == 0)
+        setTonalReference(captured);
+    return Result::ok();
+}
+
 void Processor::setStripOrder(const dsp::Order& requested)
 {
     const auto position = std::find(dsp::orders.begin(), dsp::orders.end(), requested);
@@ -217,6 +331,8 @@ bool Processor::isBusesLayoutSupported(const BusesLayout& layout) const
 void Processor::prepareToPlay(double rate, int)
 {
     rack.prepare(rate);
+    renderSettings = currentSettings();
+    renderRtaPosition = rtaPosition();
     setLatencySamples(rack.latency());
     meterRate.store(static_cast<float>(rate), std::memory_order_relaxed);
     spectrumEpoch.fetch_add(1, std::memory_order_relaxed);
@@ -257,11 +373,22 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     if (frames == 0 || audio.getNumChannels() == 0)
         return;
 
-    auto settings = currentSettings();
+    const auto revision = settingsRevision.load(std::memory_order_acquire);
+    if ((revision & 1u) == 0)
+    {
+        const auto candidate = currentSettings();
+        const auto position = rtaPosition();
+        if (settingsRevision.load(std::memory_order_acquire) == revision)
+        {
+            renderSettings = candidate;
+            renderRtaPosition = position;
+        }
+    }
+    auto settings = renderSettings;
     settings.bypass = settings.bypass || hostBypass;
     rack.configure(settings);
     const auto view = spectrumRequested.load(std::memory_order_relaxed);
-    const auto position = view == SpectrumView::tonal ? rtaPosition() : dsp::stageCount;
+    const auto position = view == SpectrumView::tonal ? renderRtaPosition : dsp::stageCount;
     const auto key = spectrumKey(view, settings.order, position, settings.bypass);
     const auto tap = settings.bypass && position < dsp::stageCount ? 0 : position;
     const auto capture = view != SpectrumView::none && (view != SpectrumView::tonal || !rack.isReordering());
@@ -376,7 +503,9 @@ bool Processor::readSpectrum(float* left, float* right, int count, std::uint32_t
 
 void Processor::getStateInformation(MemoryBlock& destination)
 {
+    const ScopedLock lock(presetLock);
     auto snapshot = state.copyState();
+    snapshot.setProperty(recallSafesProperty, static_cast<int>(presetRecallSafes()), nullptr);
     if (const auto captured = tonalReference())
     {
         StringArray values;
@@ -400,7 +529,12 @@ void Processor::setStateInformation(const void* data, int size)
     {
         if (xml->hasTagName(state.state.getType()))
         {
+            const ScopedLock lock(presetLock);
+            settingsRevision.fetch_add(1, std::memory_order_acq_rel);
+            const ScopeGuard finished { [this] { settingsRevision.fetch_add(1, std::memory_order_release); } };
             auto restored = ValueTree::fromXml(*xml);
+            setPresetRecallSafes(static_cast<unsigned>(static_cast<int>(restored.getProperty(recallSafesProperty,
+                                                                                           static_cast<int>(defaultPresetSafes)))));
             const auto restoreDefault = [&](const String& id)
             {
                 if (!restored.getChildWithProperty("id", id).isValid())

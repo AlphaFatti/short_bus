@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(ShortBus VERSION 0.1.7 LANGUAGES C CXX)
+project(ShortBus VERSION 0.1.8 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,7 +38,7 @@ if(SHORT_BUS_BUILD_PLUGIN)
         VST3_CATEGORIES Fx Dynamics
         COPY_PLUGIN_AFTER_BUILD FALSE
     )
-    target_sources(ShortBus PRIVATE src/Processor.cpp src/Editor.cpp)
+    target_sources(ShortBus PRIVATE src/Processor.cpp src/Editor.cpp src/Presets.cpp src/PresetBrowser.cpp)
     target_compile_definitions(ShortBus
         PRIVATE SHORT_BUS_VERSION="${PROJECT_VERSION}"
         PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
@@ -47,6 +47,11 @@ if(SHORT_BUS_BUILD_PLUGIN)
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
     if(BUILD_TESTING)
+        add_executable(short_bus_preset_tests tests/PresetTests.cpp)
+        target_include_directories(short_bus_preset_tests PRIVATE src
+            "$<TARGET_PROPERTY:juce::juce_audio_processors,INTERFACE_INCLUDE_DIRECTORIES>")
+        target_link_libraries(short_bus_preset_tests PRIVATE ShortBus)
+        add_test(NAME short_bus_preset_tests COMMAND short_bus_preset_tests)
         add_executable(short_bus_vst3_smoke tests/Vst3Smoke.cpp)
         target_compile_definitions(short_bus_vst3_smoke PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_USE_CURL=0)
         target_link_libraries(short_bus_vst3_smoke PRIVATE juce::juce_audio_processors_headless)
