@@ -3,6 +3,7 @@
 
 #include "dsp/Rack.h"
 #include "dsp/TonalBalance.h"
+#include "Presets.h"
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <optional>
 
@@ -64,11 +65,18 @@ public:
     juce::AudioProcessorParameter* getBypassParameter() const override;
 
     dsp::Settings currentSettings() const;
+    using TileOrder = std::array<std::size_t, dsp::stageCount + 1>;
+    TileOrder tileOrder() const;
+    void setTileOrder(const TileOrder&);
     void setStripOrder(const dsp::Order&);
     int rtaPosition() const;
     void setRtaPosition(int position);
     std::optional<dsp::TonalReference> tonalReference() const;
     void setTonalReference(std::optional<dsp::TonalReference>);
+    juce::ValueTree presetState(PresetScope);
+    juce::Result applyPreset(const juce::ValueTree&, PresetScope);
+    unsigned presetRecallSafes() const { return recallSafes.load(std::memory_order_relaxed); }
+    void setPresetRecallSafes(unsigned mask) { recallSafes.store(mask & 127u, std::memory_order_relaxed); }
     dsp::Metering readMeters() const;
     std::array<float, 2> readPeaks() const;
     bool isBypassed() const;
@@ -123,5 +131,10 @@ private:
     std::uint32_t spectrumSequence = 0;
     mutable juce::CriticalSection referenceLock;
     std::optional<dsp::TonalReference> reference;
+    mutable juce::CriticalSection presetLock;
+    std::atomic<unsigned> recallSafes { defaultPresetSafes };
+    std::atomic<std::uint32_t> settingsRevision { 0 };
+    dsp::Settings renderSettings;
+    int renderRtaPosition = dsp::stageCount;
 };
 } // namespace shortbus

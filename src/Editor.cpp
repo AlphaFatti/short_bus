@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "Editor.h"
+#include "PresetBrowser.h"
 #include "ShortBusFontData.h"
 
 #include <initializer_list>
@@ -43,6 +44,7 @@ constexpr float transferReadoutWidth = 120.0f;
 constexpr float spectrumSideWidth = 29.0f;
 constexpr float bandRangeInset = 6.0f;
 constexpr float tonalTolerance = 4.0f;
+constexpr int presetDoorWidth = 220;
 const std::array<Colour, dsp::bandCount> bandColours {
     Colour(0xfff0bf58), Colour(0xff73d6b6), Colour(0xff79bbea),
     Colour(0xffb7a7f6), Colour(0xfff090ab)
@@ -282,7 +284,7 @@ void Editor::StageButton::paintButton(Graphics& g, bool hovered, bool pressed)
     g.setColour(ink);
     g.fillRoundedRectangle(bounds, 4.0f);
     const auto pane = bounds.reduced(2.5f);
-    const auto tint = (chosen ? Colour(0xff353c40) : glass).brighter(hovered || pressed ? 0.12f : 0.0f);
+    const auto tint = (chosen ? Colour(0xff353c40) : glass).brighter(hovered || pressed || dragging ? 0.12f : 0.0f);
     g.setGradientFill(ColourGradient(tint.brighter(0.18f), pane.getX(), pane.getY(),
                                     tint.darker(0.20f), pane.getX(), pane.getBottom(), false));
     g.fillRoundedRectangle(pane, 2.5f);
@@ -295,9 +297,48 @@ void Editor::StageButton::paintButton(Graphics& g, bool hovered, bool pressed)
     label(g, skin.font(12.5f, true), getName(), area.withTrimmedLeft(18).withHeight(18), white);
     g.setColour(enabled ? yellow : edge);
     g.fillEllipse(static_cast<float>(area.getX() + 3), static_cast<float>(area.getY() + 25), 5.0f, 5.0f);
-    const auto readout = isAnalyzer ? String("MONITOR") : (enabled ? signedDb(gain) : String("OFF"));
+    const auto readout = dragging ? String("MOVE") : isAnalyzer ? String("MONITOR") : (enabled ? signedDb(gain) : String("OFF"));
     label(g, skin.font(11.0f), readout, area.withTrimmedLeft(18).withY(23).withHeight(20),
           enabled ? yellow : muted);
+}
+
+void Editor::StageButton::mouseDown(const MouseEvent& event)
+{
+    Button::mouseDown(event);
+    if (onReorder)
+        onReorder(event, 0);
+}
+
+void Editor::StageButton::mouseDrag(const MouseEvent& event)
+{
+    Button::mouseDrag(event);
+    if (onReorder)
+        onReorder(event, 1);
+}
+
+void Editor::StageButton::mouseUp(const MouseEvent& event)
+{
+    if (onReorder)
+        onReorder(event, 2);
+    Button::mouseUp(event);
+}
+
+void Editor::PresetButton::paintButton(Graphics& g, bool hovered, bool pressed)
+{
+    const auto& skin = static_cast<const BusLookAndFeel&>(getLookAndFeel());
+    const auto plate = getLocalBounds().toFloat().reduced(1.0f);
+    const auto face = getToggleState() ? yellow : white;
+    g.setGradientFill(ColourGradient(face.brighter(hovered || pressed ? 0.15f : 0.0f), plate.getX(), plate.getY(),
+                                    face.darker(0.15f), plate.getX(), plate.getBottom(), false));
+    g.fillRoundedRectangle(plate, 3.0f);
+    g.setColour(Colour(0xff485155));
+    g.drawRoundedRectangle(plate.reduced(0.6f), 3.0f, 1.2f);
+    g.drawRoundedRectangle(plate.reduced(2.5f), 1.5f, 0.7f);
+    for (const auto x : { plate.getX() + 5.0f, plate.getRight() - 5.0f })
+        for (const auto y : { plate.getY() + 4.5f, plate.getBottom() - 4.5f })
+            g.fillEllipse(x - 1.0f, y - 1.0f, 2.0f, 2.0f);
+    label(g, skin.font(7.5f, true), "SHORT BUS", getLocalBounds().withY(4).withHeight(9), ink, Justification::centred);
+    label(g, skin.font(12.5f, true), "PRESETS", getLocalBounds().withY(12).withHeight(18), ink, Justification::centred);
 }
 
 Editor::BypassButton::BypassButton() : Button("Bypass")
@@ -341,6 +382,9 @@ Editor::Editor(Processor& owner)
         button.setName(stageNames[i]);
         button.isAnalyzer = i == tonalTile;
         button.enabled = button.isAnalyzer;
+        button.setTriggeredOnMouseDown(true);
+        button.setMouseCursor(MouseCursor::PointingHandCursor);
+        button.onReorder = [this, i](const MouseEvent& event, int phase) { reorderTile(i, event, phase); };
         button.onClick = [this, i] { selectTile(i); };
         addAndMakeVisible(button);
     }
@@ -357,6 +401,9 @@ Editor::Editor(Processor& owner)
         addChildComponent(button);
     }
     addAndMakeVisible(bypass);
+    addAndMakeVisible(presetsButton);
+    presetsButton.setTitle("Open preset door");
+    presetsButton.onClick = [this] { togglePresets(); };
     for (auto* button : { &stageOn, &bandOn, &earlier, &later })
     {
         style(*button, button != &earlier && button != &later);
@@ -447,6 +494,8 @@ void Editor::selectTile(std::size_t tile)
     levels.fill(spectrumMinDb);
     applyOrder();
     bindControls();
+    if (presetBrowser != nullptr)
+        presetBrowser->setScope(static_cast<PresetScope>(tile));
 }
 
 void Editor::bindControls()
@@ -571,47 +620,153 @@ void Editor::moveStage(int direction)
     const auto destination = position + direction;
     if (destination < 0 || destination >= static_cast<int>(next.size()))
         return;
-    const auto neighbor = next[static_cast<std::size_t>(destination)];
     std::swap(next[static_cast<std::size_t>(position)], next[static_cast<std::size_t>(destination)]);
-    if (tonalSelected() || neighbor == tonalTile)
-        processor.setRtaPosition(tonalSelected() ? destination : position);
-    else
-    {
-        dsp::Order route {};
-        auto stage = route.begin();
-        for (const auto tile : next)
-            if (tile != tonalTile)
-                *stage++ = static_cast<Stage>(tile);
-        processor.setStripOrder(route);
-    }
+    processor.setTileOrder(next);
     applyOrder();
     resized();
     repaint();
 }
 
+void Editor::reorderTile(std::size_t tile, const MouseEvent& event, int phase)
+{
+    if (phase == 0 && event.mods.isLeftButtonDown())
+    {
+        finishGraphDrag();
+        tileDrag = TileDrag { tile, order, order };
+        return;
+    }
+    if (!tileDrag || tileDrag->tile != tile)
+        return;
+    if (phase == 2)
+    {
+        finishTileDrag(true);
+        return;
+    }
+    if (event.getDistanceFromDragStart() < 5)
+        return;
+    auto& drag = *tileDrag;
+    drag.active = true;
+    stages[tile].dragging = true;
+    stages[tile].setMouseCursor(MouseCursor::DraggingHandCursor);
+    const auto point = event.getEventRelativeTo(this).position;
+    const auto strip = busBounds().reduced(frameInset, 0).withY(windowTop).withHeight(windowHeight).toFloat();
+    drag.valid = strip.expanded(14.0f).contains(point);
+    drag.preview = drag.origin;
+    if (drag.valid)
+    {
+        const auto source = std::find(drag.preview.begin(), drag.preview.end(), tile);
+        const auto slot = jlimit(0, static_cast<int>(tileCount - 1),
+                                static_cast<int>((point.x - strip.getX()) * static_cast<float>(tileCount) / strip.getWidth()));
+        const auto destination = drag.preview.begin() + slot;
+        if (source < destination)
+            std::rotate(source, source + 1, destination + 1);
+        else if (source > destination)
+            std::rotate(destination, source, source + 1);
+    }
+    resized();
+    repaint();
+}
+
+void Editor::finishTileDrag(bool commit)
+{
+    if (!tileDrag)
+        return;
+    const auto drag = *tileDrag;
+    tileDrag.reset();
+    stages[drag.tile].dragging = false;
+    stages[drag.tile].setMouseCursor(MouseCursor::PointingHandCursor);
+    if (commit && drag.active && drag.valid && processor.tileOrder() == drag.origin)
+        processor.setTileOrder(drag.preview);
+    applyOrder();
+    resized();
+    repaint();
+}
+
+Rectangle<int> Editor::busBounds() const
+{
+    return getLocalBounds().withTrimmedRight(presetDoorAllocated ? presetDoorWidth : 0);
+}
+
+void Editor::togglePresets()
+{
+    presetDoorTarget = !presetDoorTarget;
+    presetsButton.setToggleState(presetDoorTarget, dontSendNotification);
+    if (presetDoorTarget)
+    {
+        if (presetBrowser == nullptr)
+        {
+            presetBrowser = std::make_unique<PresetBrowser>(processor);
+            addAndMakeVisible(*presetBrowser);
+        }
+        presetBrowser->setScope(static_cast<PresetScope>(selectedTile));
+        presetBrowser->setVisible(true);
+        if (!presetDoorAllocated)
+        {
+            const auto closedWidth = getWidth();
+            presetDoorAllocated = true;
+            setResizeLimits(568 + presetDoorWidth, 494, 1040 + presetDoorWidth, 820);
+            setSize(closedWidth + presetDoorWidth, getHeight());
+        }
+    }
+    resized();
+    repaint();
+}
+
+void Editor::animatePresetDoor(double elapsedMs)
+{
+    if (!presetDoorAllocated)
+        return;
+    presetDoorProgress = jlimit(0.0f, 1.0f, presetDoorProgress
+        + static_cast<float>(elapsedMs / 180.0) * (presetDoorTarget ? 1.0f : -1.0f));
+    if (presetDoorProgress <= 0.0f && !presetDoorTarget)
+    {
+        const auto openWidth = getWidth();
+        presetBrowser->setVisible(false);
+        presetDoorAllocated = false;
+        setResizeLimits(568, 494, 1040, 820);
+        setSize(openWidth - presetDoorWidth, getHeight());
+    }
+    resized();
+}
+
 void Editor::applyOrder()
 {
     refreshSettings();
-    const auto& route = dsp::orders[static_cast<std::size_t>(settings.order)];
-    const auto tap = static_cast<std::size_t>(processor.rtaPosition());
-    auto stage = route.begin();
-    for (std::size_t i = 0; i < order.size(); ++i)
-        order[i] = i == tap ? tonalTile : dsp::index(*stage++);
+    order = processor.tileOrder();
+    if (tileDrag && order != tileDrag->origin)
+    {
+        stages[tileDrag->tile].dragging = false;
+        stages[tileDrag->tile].setMouseCursor(MouseCursor::PointingHandCursor);
+        tileDrag.reset();
+    }
     earlier.setEnabled(order.front() != selectedTile);
     later.setEnabled(order.back() != selectedTile);
-    for (std::size_t i = 0; i < order.size(); ++i)
-        stages[order[i]].position = static_cast<int>(i);
+    const auto& displayed = tileDrag && tileDrag->active ? tileDrag->preview : order;
+    for (std::size_t i = 0; i < displayed.size(); ++i)
+        stages[displayed[i]].position = static_cast<int>(i);
 }
 
 void Editor::resized()
 {
-    const auto content = getLocalBounds().reduced(controlInset, 0);
-    bypass.setBounds(getWidth() - 82, getHeight() - bumperDepth + 4, 56, 56);
-    auto strip = getLocalBounds().reduced(frameInset, 0).withY(windowTop).withHeight(windowHeight);
-    for (std::size_t i = 0; i < order.size(); ++i)
+    const auto content = busBounds().reduced(controlInset, 0);
+    bypass.setBounds(busBounds().getWidth() - 82, getHeight() - bumperDepth + 4, 56, 56);
+    presetsButton.setBounds(busBounds().getWidth() - 171, getHeight() - bumperDepth + 14, 81, 36);
+    auto strip = busBounds().reduced(frameInset, 0).withY(windowTop).withHeight(windowHeight);
+    const auto& displayed = tileDrag && tileDrag->active ? tileDrag->preview : order;
+    for (std::size_t i = 0; i < displayed.size(); ++i)
     {
         const auto slot = strip.removeFromLeft(strip.getWidth() / static_cast<int>(order.size() - i));
-        stages[order[i]].setBounds(slot.withTrimmedRight(i + 1 < order.size() ? 6 : 0));
+        stages[displayed[i]].position = static_cast<int>(i);
+        stages[displayed[i]].setBounds(slot.withTrimmedRight(i + 1 < order.size() ? 6 : 0));
+    }
+    if (presetBrowser != nullptr && presetDoorAllocated)
+    {
+        presetBrowser->setBounds(busBounds().getWidth() - 9, windowTop, presetDoorWidth,
+                                 getHeight() - windowTop - bumperDepth - 4);
+        const auto fraction = presetDoorProgress * presetDoorProgress * (3.0f - 2.0f * presetDoorProgress);
+        presetBrowser->setTransform(AffineTransform::scale(std::max(0.001f, fraction), 1.0f,
+                                                         static_cast<float>(presetBrowser->getX()), 0.0f));
+        presetBrowser->setEnabled(presetDoorTarget && presetDoorProgress >= 1.0f);
     }
     auto title = content.withY(inspectorTop).withHeight(24);
     later.setBounds(title.removeFromRight(27));
@@ -650,10 +805,10 @@ void Editor::resized()
 Rectangle<float> Editor::plot() const
 {
     if (tonalSelected())
-        return getLocalBounds().reduced(controlInset, 0).withTrimmedTop(optionTop + 27)
+        return busBounds().reduced(controlInset, 0).withTrimmedTop(optionTop + 27)
             .withTrimmedBottom(bumperDepth + 20).toFloat();
     const auto top = selected == Stage::multiband || selected == Stage::lowLevel ? optionTop + 27 : optionTop;
-    return getLocalBounds().reduced(controlInset, 0).withTrimmedTop(top)
+    return busBounds().reduced(controlInset, 0).withTrimmedTop(top)
         .withTrimmedBottom(sliderRowsBottom + sliderRowHeight * 2 + 5).toFloat();
 }
 
@@ -670,7 +825,7 @@ Rectangle<float> Editor::spectrumArea() const
 
 void Editor::drawBus(Graphics& g)
 {
-    const auto width = static_cast<float>(getWidth());
+    const auto width = static_cast<float>(busBounds().getWidth());
     const auto middle = width * 0.5f;
     const auto floor = static_cast<float>(getHeight() - bumperDepth + 5);
     const auto left = 10.0f;
@@ -738,7 +893,7 @@ void Editor::drawBus(Graphics& g)
         }
     }
 
-    const auto panelBounds = getLocalBounds().reduced(frameInset, 0).withTrimmedTop(doorTop)
+    const auto panelBounds = busBounds().reduced(frameInset, 0).withTrimmedTop(doorTop)
         .withTrimmedBottom(bumperDepth + 5).toFloat();
     g.setColour(ink);
     g.fillRoundedRectangle(panelBounds, 5.0f);
@@ -792,16 +947,16 @@ void Editor::drawVerticalMeter(Graphics& g, const char* name, Rectangle<float> l
 
 void Editor::drawHeader(Graphics& g)
 {
-    const auto signWidth = roundToInt(static_cast<float>(getWidth()) * 0.46f);
-    const auto fontSize = jlimit(39.0f, 60.0f, static_cast<float>(getWidth()) * 0.078f);
-    const auto sign = getLocalBounds().withSizeKeepingCentre(signWidth, 60).withY(35);
+    const auto signWidth = roundToInt(static_cast<float>(busBounds().getWidth()) * 0.46f);
+    const auto fontSize = jlimit(39.0f, 60.0f, static_cast<float>(busBounds().getWidth()) * 0.078f);
+    const auto sign = busBounds().withSizeKeepingCentre(signWidth, 60).withY(35);
     label(g, theme.font(fontSize, true), "SHORT BUS", sign.reduced(4, 0), ink, Justification::centred);
     label(g, theme.font(11.5f, true), "MASTERING DYNAMICS", sign.withY(96).withHeight(17),
           ink, Justification::centred);
 
     label(g, theme.font(16.0f, true), tonalSelected() ? "Tonal balance" : inspectorNames[dsp::index(selected)],
           { controlInset, inspectorTop, 218, 24 }, white);
-    label(g, theme.font(10.5f, true), "MOVE", { getWidth() - controlInset - 97, inspectorTop, 35, 24 },
+    label(g, theme.font(10.5f, true), "MOVE", { busBounds().getWidth() - controlInset - 97, inspectorTop, 35, 24 },
           muted, Justification::centredRight);
     if (tonalSelected())
     {
@@ -831,7 +986,7 @@ void Editor::drawHeader(Graphics& g)
 void Editor::drawBumper(Graphics& g)
 {
     const auto top = getHeight() - bumperDepth;
-    const auto bumper = Rectangle<int>(6, top, getWidth() - 12, bumperDepth - 8).toFloat();
+    const auto bumper = Rectangle<int>(6, top, busBounds().getWidth() - 12, bumperDepth - 8).toFloat();
     g.setGradientFill(ColourGradient(Colour(0xff373b3e), bumper.getX(), bumper.getY(),
                                     Colour(0xff1b1d20), bumper.getX(), bumper.getBottom(), false));
     g.fillRoundedRectangle(bumper, 7.0f);
@@ -842,11 +997,13 @@ void Editor::drawBumper(Graphics& g)
 
     drawPeakMeter(g, "IN", peaks[0], frameInset + 4, top + 17);
     drawPeakMeter(g, "OUT", peaks[1], frameInset + 4, top + 34);
-    const auto center = Rectangle<int>(209, top + 12, getWidth() - 308, 39);
+    const auto center = Rectangle<int>(209, top + 12, presetsButton.getX() - 219, 39);
     const auto earlyLimiter = settings.limiter.enabled
         && dsp::orders[static_cast<std::size_t>(settings.order)].back() != Stage::limiter;
+    const auto* caption = earlyLimiter ? "GAIN AFTER LIMITER CAN EXCEED CEILING"
+        : center.getWidth() < 200 ? "STEREO / 3 MS" : "STEREO / 3 MS LOOKAHEAD";
     label(g, theme.font(10.5f, true),
-          earlyLimiter ? "GAIN AFTER LIMITER CAN EXCEED CEILING" : "STEREO LINKED  /  3 MS LOOKAHEAD",
+          caption,
           center.withHeight(20), earlyLimiter ? yellow : white);
     label(g, theme.font(10.0f), "VST3  /  v" SHORT_BUS_VERSION, center.withTrimmedTop(20), muted);
 }
@@ -1295,6 +1452,7 @@ void Editor::animateLights()
     const auto now = Time::getMillisecondCounterHiRes();
     const auto elapsed = std::max(0.0, now - lastLampTick);
     lastLampTick = now;
+    animatePresetDoor(elapsed);
     const auto bypassed = processor.isBypassed();
     const auto peakHit = processor.consumeOutputPeakEvent();
     if (bypassed)
