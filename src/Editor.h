@@ -41,6 +41,13 @@ private:
         bool enabled = false;
     };
 
+    struct BypassButton final : juce::Button
+    {
+        BypassButton();
+        bool hitTest(int x, int y) override;
+        void paintButton(juce::Graphics&, bool hovered, bool pressed) override;
+    };
+
     void timerCallback() override;
     void selectStage(dsp::Stage);
     void bindControls();
@@ -50,6 +57,7 @@ private:
     juce::Rectangle<float> plot() const;
     void drawBus(juce::Graphics&);
     void drawHeader(juce::Graphics&);
+    void drawBumper(juce::Graphics&);
     void drawPeakMeter(juce::Graphics&, const char* name, float peak, int x, int y);
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
@@ -71,7 +79,8 @@ private:
     int selectedBand = 0;
     std::array<StageButton, dsp::stageCount> stages;
     std::array<juce::TextButton, dsp::bandCount> bands;
-    juce::TextButton bypass { "Bypass" }, stageOn { "Stage on" }, bandOn { "Band on" };
+    BypassButton bypass;
+    juce::TextButton stageOn { "Stage on" }, bandOn { "Band on" };
     juce::TextButton earlier { "<" }, later { ">" };
     juce::ComboBox mode;
     std::array<juce::Slider, controlCount> sliders;

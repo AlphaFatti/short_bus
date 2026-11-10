@@ -11,22 +11,28 @@ using dsp::Stage;
 
 namespace
 {
-const auto background = Colour(0xff14171b);
+const auto background = Colour(0xff121416);
 const auto body = Colour(0xffe8a317);
-const auto ink = Colour(0xff1d1b17);
-const auto glass = Colour(0xff243441);
-const auto panel = Colour(0xff20272e);
-const auto graph = Colour(0xff11161b);
-const auto edge = Colour(0xff424d56);
+const auto ink = Colour(0xff171715);
+const auto glass = Colour(0xff2c3338);
+const auto panel = Colour(0xff262b2f);
+const auto door = Colour(0xff1b1e21);
+const auto graph = Colour(0xff101214);
+const auto edge = Colour(0xff434b51);
 const auto white = Colour(0xfffff5e3);
 const auto muted = Colour(0xffb3c0cb);
 const auto yellow = Colour(0xffffd475);
 const auto red = Colour(0xfff6877f);
-constexpr int inset = 28;
-constexpr int windowTop = 55;
-constexpr int windowHeight = 45;
-constexpr int inspectorTop = 113;
-constexpr int bandTop = 140;
+constexpr int frameInset = 26;
+constexpr int controlInset = 40;
+constexpr int windowTop = 129;
+constexpr int windowHeight = 50;
+constexpr int doorTop = 185;
+constexpr int inspectorTop = 196;
+constexpr int optionTop = 226;
+constexpr int bumperDepth = 70;
+constexpr int sliderRowsBottom = 81;
+constexpr int sliderRowHeight = 36;
 const std::array<Colour, dsp::bandCount> bandColours {
     Colour(0xfff0bf58), Colour(0xff73d6b6), Colour(0xff79bbea),
     Colour(0xffb7a7f6), Colour(0xfff090ab)
@@ -94,32 +100,42 @@ void label(Graphics& g, const Font& font, String text, Rectangle<int> bounds, Co
     g.drawFittedText(text, bounds, alignment, 1, 0.85f);
 }
 
-void drawWheel(Graphics& g, Point<float> center)
+void drawWarningLamp(Graphics& g, Point<float> center, float radius, Colour lens)
 {
-    const auto circle = [center](float radius)
-    {
-        return Rectangle<float>(radius * 2.0f, radius * 2.0f).withCentre(center);
-    };
-    {
-        const Graphics::ScopedSaveState clip(g);
-        const auto arch = circle(30.0f).withHeight(31.0f).getSmallestIntegerContainer();
-        g.reduceClipRegion(arch);
-        g.setColour(Colour(0xff9c6516));
-        g.fillEllipse(circle(30.0f));
-    }
-    g.setColour(background);
-    g.fillEllipse(circle(27.0f));
-    g.setColour(Colour(0xff262c31));
-    g.fillEllipse(circle(24.0f));
-    g.setColour(Colour(0xff3b464f));
-    g.drawEllipse(circle(20.5f), 1.3f);
-    g.setColour(Colour(0xff87929b));
-    g.fillEllipse(circle(12.5f));
-    g.setColour(Colour(0xff45515a));
-    g.drawEllipse(circle(10.0f), 1.5f);
-    g.fillEllipse(circle(4.0f));
-    g.setColour(muted);
-    g.fillEllipse(circle(2.0f));
+    const auto ring = [center](float r) { return Rectangle<float>(r * 2.0f, r * 2.0f).withCentre(center); };
+    g.setColour(Colour(0xff111315));
+    g.fillEllipse(ring(radius));
+    g.setColour(Colour(0xff596065));
+    g.drawEllipse(ring(radius - 2.2f), 1.0f);
+    const auto face = ring(radius - 4.4f);
+    g.setGradientFill(ColourGradient(lens.brighter(0.38f), center.x, face.getY(),
+                                    lens.darker(0.58f), center.x, face.getBottom(), false));
+    g.fillEllipse(face);
+    g.setColour(lens.brighter(0.85f).withAlpha(0.35f));
+    g.fillEllipse(face.withSizeKeepingCentre(face.getWidth() * 0.53f, face.getHeight() * 0.22f)
+                      .translated(0.0f, -radius * 0.31f));
+    g.setColour(Colours::black.withAlpha(0.16f));
+    g.fillRoundedRectangle(face.reduced(face.getWidth() * 0.12f, face.getHeight() * 0.32f), 2.0f);
+}
+
+Path stopSign(Rectangle<float> bounds)
+{
+    const auto left = bounds.getX();
+    const auto right = bounds.getRight();
+    const auto top = bounds.getY();
+    const auto bottom = bounds.getBottom();
+    const auto corner = bounds.getWidth() * 0.293f;
+    Path outline;
+    outline.startNewSubPath(left + corner, top);
+    outline.lineTo(right - corner, top);
+    outline.lineTo(right, top + corner);
+    outline.lineTo(right, bottom - corner);
+    outline.lineTo(right - corner, bottom);
+    outline.lineTo(left + corner, bottom);
+    outline.lineTo(left, bottom - corner);
+    outline.lineTo(left, top + corner);
+    outline.closeSubPath();
+    return outline;
 }
 
 float levelToY(Rectangle<float> area, float db)
@@ -178,20 +194,53 @@ void Editor::StageButton::paintButton(Graphics& g, bool hovered, bool pressed)
     const auto chosen = getToggleState();
     const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
     g.setColour(ink);
-    g.fillRoundedRectangle(bounds, 5.0f);
-    g.setColour((chosen ? Colour(0xff263f50) : glass).brighter(hovered || pressed ? 0.10f : 0.0f));
-    g.fillRoundedRectangle(bounds.reduced(2.0f), 3.0f);
-    g.setColour(chosen || hasKeyboardFocus(false) ? white : Colour(0xff5b7483));
-    g.drawRoundedRectangle(bounds.reduced(2.0f), 3.0f, 1.0f);
+    g.fillRoundedRectangle(bounds, 4.0f);
+    const auto pane = bounds.reduced(2.5f);
+    const auto tint = (chosen ? Colour(0xff353c40) : glass).brighter(hovered || pressed ? 0.12f : 0.0f);
+    g.setGradientFill(ColourGradient(tint.brighter(0.18f), pane.getX(), pane.getY(),
+                                    tint.darker(0.20f), pane.getX(), pane.getBottom(), false));
+    g.fillRoundedRectangle(pane, 2.5f);
+    g.setColour(chosen || hasKeyboardFocus(false) ? yellow : Colour(0xff566069));
+    g.drawRoundedRectangle(pane, 2.5f, 1.0f);
 
-    const auto area = getLocalBounds().reduced(9, 4);
-    label(g, skin.font(10.5f, true), "0" + String(position + 1), area.withWidth(20).withHeight(17),
+    const auto area = getLocalBounds().reduced(9, 5);
+    label(g, skin.font(10.5f, true), "0" + String(position + 1), area.withWidth(20).withHeight(18),
           chosen ? yellow : muted);
-    label(g, skin.font(13.0f, true), getName(), area.withTrimmedLeft(22).withHeight(17), white);
+    label(g, skin.font(13.0f, true), getName(), area.withTrimmedLeft(22).withHeight(18), white);
     g.setColour(enabled ? yellow : edge);
     g.fillEllipse(static_cast<float>(area.getX() + 3), static_cast<float>(area.getY() + 25), 5.0f, 5.0f);
-    label(g, skin.font(11.0f), enabled ? signedDb(gain) : "OFF", area.withTrimmedLeft(22).withTrimmedTop(18),
+    label(g, skin.font(11.0f), enabled ? signedDb(gain) : "OFF", area.withTrimmedLeft(22).withY(23).withHeight(20),
           enabled ? yellow : muted);
+}
+
+Editor::BypassButton::BypassButton() : Button("Bypass")
+{
+    setTitle("Bypass all processing");
+    setClickingTogglesState(true);
+}
+
+bool Editor::BypassButton::hitTest(int x, int y)
+{
+    return stopSign(getLocalBounds().toFloat().reduced(1.5f))
+        .contains(static_cast<float>(x), static_cast<float>(y));
+}
+
+void Editor::BypassButton::paintButton(Graphics& g, bool hovered, bool pressed)
+{
+    const auto& skin = static_cast<const BusLookAndFeel&>(getLookAndFeel());
+    const auto bounds = getLocalBounds().toFloat().reduced(1.5f);
+    const auto outline = stopSign(bounds);
+    const auto active = getToggleState();
+    g.setColour((active ? Colour(0xffdb332e) : Colour(0xff9a2a27)).brighter(hovered || pressed ? 0.15f : 0.0f));
+    g.fillPath(outline);
+    g.setColour(hasKeyboardFocus(false) ? yellow : white);
+    g.strokePath(outline, PathStrokeType(1.5f));
+    auto textArea = getLocalBounds().withSizeKeepingCentre(getWidth() - 5, 16);
+    if (active)
+        textArea.translate(0, -4);
+    label(g, skin.font(12.0f, true), "BYPASS", textArea, white, Justification::centred);
+    if (active)
+        label(g, skin.font(8.5f, true), "ON", textArea.translated(0, 12), white, Justification::centred);
 }
 
 Editor::Editor(Processor& owner)
@@ -219,7 +268,8 @@ Editor::Editor(Processor& owner)
         };
         addChildComponent(button);
     }
-    for (auto* button : { &bypass, &stageOn, &bandOn, &earlier, &later })
+    addAndMakeVisible(bypass);
+    for (auto* button : { &stageOn, &bandOn, &earlier, &later })
     {
         style(*button, button != &earlier && button != &later);
         addAndMakeVisible(*button);
@@ -242,21 +292,21 @@ Editor::Editor(Processor& owner)
         auto& slider = sliders[i];
         slider.setSliderStyle(Slider::LinearHorizontal);
         slider.setTextBoxStyle(Slider::TextBoxRight, false, 51, 24);
-        slider.setColour(Slider::trackColourId, Colour(0xff75470d));
-        slider.setColour(Slider::thumbColourId, ink);
-        slider.setColour(Slider::backgroundColourId, ink.withAlpha(0.25f));
-        slider.setColour(Slider::textBoxTextColourId, ink);
-        slider.setColour(Slider::textBoxBackgroundColourId, Colour(0xffffe8b2));
-        slider.setColour(Slider::textBoxOutlineColourId, ink.withAlpha(0.55f));
-        labels[i].setColour(Label::textColourId, ink);
+        slider.setColour(Slider::trackColourId, body);
+        slider.setColour(Slider::thumbColourId, yellow);
+        slider.setColour(Slider::backgroundColourId, edge);
+        slider.setColour(Slider::textBoxTextColourId, white);
+        slider.setColour(Slider::textBoxBackgroundColourId, graph);
+        slider.setColour(Slider::textBoxOutlineColourId, edge);
+        labels[i].setColour(Label::textColourId, muted);
         labels[i].setFont(theme.font(11.5f, true));
         addChildComponent(slider);
         addChildComponent(labels[i]);
     }
 
     setResizable(true, true);
-    setResizeLimits(660, 374, 1120, 720);
-    setSize(770, 408);
+    setResizeLimits(568, 494, 1040, 820);
+    setSize(636, 548);
     selectStage(Stage::lowLevel);
     startTimerHz(24);
 }
@@ -361,9 +411,9 @@ void Editor::applyOrder()
 
 void Editor::resized()
 {
-    const auto content = getLocalBounds().reduced(inset, 0);
-    bypass.setBounds(getWidth() - 220, 20, 72, 24);
-    auto strip = content.withY(windowTop).withHeight(windowHeight).withTrimmedRight(120);
+    const auto content = getLocalBounds().reduced(controlInset, 0);
+    bypass.setBounds(getWidth() - 82, getHeight() - bumperDepth + 4, 56, 56);
+    auto strip = getLocalBounds().reduced(frameInset, 0).withY(windowTop).withHeight(windowHeight);
     for (std::size_t i = 0; i < order.size(); ++i)
     {
         const auto slot = strip.removeFromLeft(strip.getWidth() / static_cast<int>(order.size() - i));
@@ -375,130 +425,164 @@ void Editor::resized()
     earlier.setBounds(title.removeFromRight(27));
     title.removeFromRight(45);
     stageOn.setBounds(title.removeFromRight(72));
-    title.removeFromRight(7);
-    mode.setBounds(title.removeFromRight(160));
 
-    auto bandRow = content.withY(bandTop).withHeight(21);
-    bandOn.setBounds(bandRow.removeFromRight(72));
+    auto options = content.withY(optionTop).withHeight(22);
+    mode.setBounds(options.withWidth(167));
+    bandOn.setBounds(options.removeFromRight(72));
     for (auto& band : bands)
-        band.setBounds(bandRow.removeFromLeft(61).withTrimmedRight(4));
+        band.setBounds(options.removeFromLeft(59).withTrimmedRight(4));
 
-    auto controls = content.withY(getHeight() - 133).withHeight(78);
+    const auto controlsTop = getHeight() - sliderRowsBottom - sliderRowHeight * 2;
+    auto controls = content.withY(controlsTop).withHeight(sliderRowHeight * 2);
     for (std::size_t row = 0; row < 2; ++row)
     {
-        auto line = controls.removeFromTop(39);
+        auto line = controls.removeFromTop(sliderRowHeight);
         for (std::size_t column = 0; column < 4; ++column)
         {
-            const auto cell = line.removeFromLeft(line.getWidth() / static_cast<int>(4 - column)).reduced(4, 0);
+            const auto cell = line.removeFromLeft(line.getWidth() / static_cast<int>(4 - column)).reduced(3, 0);
             const auto index = row * 4 + column;
-            labels[index].setBounds(cell.withHeight(16));
-            sliders[index].setBounds(cell.withTrimmedTop(16).withHeight(22));
+            labels[index].setBounds(cell.withHeight(14));
+            sliders[index].setBounds(cell.withTrimmedTop(14).withHeight(22));
         }
     }
 }
 
 Rectangle<float> Editor::plot() const
 {
-    return getLocalBounds().reduced(inset, 0).withTrimmedTop(selected == Stage::multiband ? 167 : 142)
-        .withTrimmedBottom(138).toFloat();
+    const auto top = selected == Stage::multiband || selected == Stage::lowLevel ? optionTop + 27 : optionTop;
+    return getLocalBounds().reduced(controlInset, 0).withTrimmedTop(top)
+        .withTrimmedBottom(sliderRowsBottom + sliderRowHeight * 2 + 5).toFloat();
 }
 
 void Editor::drawBus(Graphics& g)
 {
     const auto width = static_cast<float>(getWidth());
-    const auto height = static_cast<float>(getHeight());
-    const auto rear = 10.0f;
-    const auto front = width - 10.0f;
-    const auto floor = height - 25.0f;
+    const auto middle = width * 0.5f;
+    const auto floor = static_cast<float>(getHeight() - bumperDepth + 5);
+    const auto left = 10.0f;
+    const auto right = width - left;
 
     Path shell;
-    shell.startNewSubPath(rear, floor - 8.0f);
-    shell.lineTo(rear, 39.0f);
-    shell.quadraticTo(rear, 10.0f, rear + 30.0f, 10.0f);
-    shell.lineTo(front - 157.0f, 10.0f);
-    shell.quadraticTo(front - 134.0f, 10.0f, front - 121.0f, 41.0f);
-    shell.lineTo(front - 91.0f, 105.0f);
-    shell.lineTo(front - 27.0f, 105.0f);
-    shell.quadraticTo(front, 105.0f, front, 132.0f);
-    shell.lineTo(front, floor - 7.0f);
-    shell.quadraticTo(front, floor, front - 7.0f, floor);
-    shell.lineTo(rear + 8.0f, floor);
-    shell.quadraticTo(rear, floor, rear, floor - 8.0f);
+    shell.startNewSubPath(left, floor);
+    shell.lineTo(left, 119.0f);
+    shell.cubicTo(left, 74.0f, 25.0f, 54.0f, 65.0f, 40.0f);
+    shell.cubicTo(middle - 132.0f, 16.0f, middle - 68.0f, 8.0f, middle, 8.0f);
+    shell.cubicTo(middle + 68.0f, 8.0f, middle + 132.0f, 16.0f, width - 65.0f, 40.0f);
+    shell.cubicTo(width - 25.0f, 54.0f, right, 74.0f, right, 119.0f);
+    shell.lineTo(right, floor);
     shell.closeSubPath();
     g.setColour(body);
     g.fillPath(shell);
+    g.setColour(Colour(0xffffc64e));
+    g.strokePath(shell, PathStrokeType(1.2f));
 
+    const auto signWidth = width * 0.46f;
     {
         const Graphics::ScopedSaveState clip(g);
         g.reduceClipRegion(shell);
-        g.setColour(Colour(0xffffc44d));
-        g.fillRect(rear, 10.0f, front - rear, 3.0f);
-        g.setColour(ink);
-        g.fillRect(rear, 103.0f, front - rear - 90.0f, 5.0f);
-        g.fillRect(rear, floor - 23.0f, front - rear, 23.0f);
-        g.setColour(Colour(0xffab7115));
-        g.fillRect(rear, floor - 25.0f, front - rear, 2.0f);
-        g.drawVerticalLine(20, 51.0f, floor - 26.0f);
+        const auto roofHeight = static_cast<float>(windowTop - 7);
+        g.setGradientFill(ColourGradient(Colour(0xff515457), middle, 20.0f,
+                                        Colour(0xff26292b), middle, roofHeight, false));
+        g.fillRect(left, 8.0f, middle - signWidth * 0.5f - left, roofHeight - 8.0f);
+        g.fillRect(middle + signWidth * 0.5f, 8.0f, right - middle - signWidth * 0.5f, roofHeight - 8.0f);
+        g.setGradientFill(ColourGradient(body.brighter(0.27f), middle, 8.0f,
+                                        body, middle, roofHeight, false));
+        g.fillRect(middle - signWidth * 0.5f, 8.0f, signWidth, roofHeight - 8.0f);
+        g.setColour(Colour(0xff9d6814));
+        g.fillRect(left, roofHeight - 4.0f, right - left, 2.0f);
+        g.setColour(Colour(0xfff7be48));
+        g.fillRect(left, roofHeight - 2.0f, right - left, 2.0f);
     }
 
-    Path windshield;
-    windshield.startNewSubPath(front - 132.0f, 50.0f);
-    windshield.lineTo(front - 121.0f, 50.0f);
-    windshield.lineTo(front - 98.0f, 99.0f);
-    windshield.lineTo(front - 132.0f, 99.0f);
-    windshield.closeSubPath();
-    g.setColour(glass);
-    g.fillPath(windshield);
-    g.setColour(ink);
-    g.strokePath(windshield, PathStrokeType(2.0f, PathStrokeType::curved, PathStrokeType::rounded));
-    g.setColour(Colour(0xff688c9e));
-    g.drawLine(front - 129.0f, 54.0f, front - 122.0f, 54.0f, 1.4f);
-    g.drawLine(front - 128.0f, 57.0f, front - 128.0f, 93.0f, 1.1f);
-    g.setColour(ink);
-    g.drawLine(front - 109.0f, 80.0f, front - 91.0f, 92.0f, 2.0f);
-    g.fillRoundedRectangle(front - 94.0f, 88.0f, 7.0f, 13.0f, 2.0f);
+    const auto lampRadius = jlimit(17.0f, 26.0f, width * 0.035f);
+    for (auto offset : { width * 0.16f, width * 0.083f })
+    {
+        const auto lens = offset > width * 0.1f ? Colour(0xff8f322c) : Colour(0xff97501b);
+        drawWarningLamp(g, { middle - signWidth * 0.5f + width * 0.025f - offset, 87.0f }, lampRadius, lens);
+        drawWarningLamp(g, { middle + signWidth * 0.5f - width * 0.025f + offset, 87.0f }, lampRadius, lens);
+    }
+    for (auto offset : { -23.0f, 0.0f, 23.0f })
+    {
+        g.setColour(Colour(0xff693818));
+        g.fillRoundedRectangle(middle + offset - 8.0f, 19.0f, 16.0f, 9.0f, 2.7f);
+        g.setColour(Colour(0xffa6372e));
+        g.fillRoundedRectangle(middle + offset - 6.0f, 20.0f, 12.0f, 5.5f, 1.6f);
+        g.setColour(Colour(0xffc66347));
+        g.fillRoundedRectangle(middle + offset - 4.0f, 20.4f, 8.0f, 1.0f, 0.5f);
+    }
 
-    g.fillRoundedRectangle(rear + 2.0f, floor - 98.0f, 9.0f, 31.0f, 3.0f);
-    g.fillRoundedRectangle(front - 14.0f, 149.0f, 13.0f, 25.0f, 3.0f);
-    g.setColour(Colour(0xffd84d3e));
-    g.fillRoundedRectangle(rear + 4.0f, floor - 94.0f, 5.0f, 10.0f, 2.0f);
-    g.setColour(yellow);
-    g.fillRoundedRectangle(rear + 4.0f, floor - 80.0f, 5.0f, 10.0f, 2.0f);
-    g.setColour(white);
-    g.fillRoundedRectangle(front - 12.0f, 152.0f, 9.0f, 14.0f, 2.0f);
+    for (const auto railX : { left + 7.0f, right - 7.0f })
+    {
+        g.setColour(Colour(0xffaa731c));
+        g.drawVerticalLine(roundToInt(railX), 127.0f, floor - 7.0f);
+        for (auto y = 141.0f; y < floor - 8.0f; y += 23.0f)
+        {
+            g.fillEllipse(railX - 1.3f, y, 2.6f, 2.6f);
+            g.setColour(Colour(0xffffc654));
+            g.fillEllipse(railX - 0.9f, y + 0.3f, 1.3f, 1.3f);
+            g.setColour(Colour(0xffaa731c));
+        }
+    }
 
-    g.setColour(Colour(0xff42474a));
-    g.fillRoundedRectangle(rear - 5.0f, floor - 7.0f, 42.0f, 8.0f, 3.0f);
-    g.fillRoundedRectangle(front - 42.0f, floor - 7.0f, 47.0f, 8.0f, 3.0f);
-    drawWheel(g, { 108.0f, floor - 1.0f });
-    drawWheel(g, { width - 102.0f, floor - 1.0f });
+    const auto panelBounds = getLocalBounds().reduced(frameInset, 0).withTrimmedTop(doorTop)
+        .withTrimmedBottom(bumperDepth + 5).toFloat();
+    g.setColour(ink);
+    g.fillRoundedRectangle(panelBounds, 5.0f);
+    g.setColour(door);
+    g.fillRoundedRectangle(panelBounds.reduced(2.0f), 3.0f);
+    g.setColour(Colour(0xff353a3d));
+    g.drawRoundedRectangle(panelBounds.reduced(2.0f), 3.0f, 1.0f);
 }
 
 void Editor::drawPeakMeter(Graphics& g, const char* name, float peak, int x, int y)
 {
     const auto db = dsp::dbFromGain(peak);
-    label(g, theme.font(10.5f, true), name, { x, y, 28, 12 }, ink);
-    const Rectangle<float> track { static_cast<float>(x + 29), static_cast<float>(y + 3), 94.0f, 6.0f };
-    g.setColour(ink);
+    label(g, theme.font(10.5f, true), name, { x, y, 26, 12 }, muted);
+    const Rectangle<float> track { static_cast<float>(x + 28), static_cast<float>(y + 3), 96.0f, 6.0f };
+    g.setColour(graph);
     g.fillRoundedRectangle(track, 3.0f);
     const auto fill = jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
     g.setColour(db >= 0.0f ? red : yellow);
     g.fillRoundedRectangle(track.reduced(1.0f).withWidth((track.getWidth() - 2.0f) * fill), 2.0f);
     label(g, theme.font(10.5f, true), db < -60.0f ? "-inf" : String(db, 1),
-          { x + 125, y, 33, 12 }, ink, Justification::centredRight);
+          { x + 128, y, 32, 12 }, db >= 0.0f ? red : white, Justification::centredRight);
 }
 
 void Editor::drawHeader(Graphics& g)
 {
-    label(g, theme.font(28.0f, true), "SHORT BUS", { inset, 11, 205, 31 }, ink);
-    label(g, theme.font(10.5f, true), "MASTERING DYNAMICS", { inset + 1, 40, 185, 12 }, ink);
-    drawPeakMeter(g, "IN", peaks[0], getWidth() - 393, 17);
-    drawPeakMeter(g, "OUT", peaks[1], getWidth() - 393, 33);
+    const auto signWidth = roundToInt(static_cast<float>(getWidth()) * 0.46f);
+    const auto fontSize = jlimit(39.0f, 60.0f, static_cast<float>(getWidth()) * 0.078f);
+    const auto sign = getLocalBounds().withSizeKeepingCentre(signWidth, 60).withY(35);
+    label(g, theme.font(fontSize, true), "SHORT BUS", sign.reduced(4, 0), ink, Justification::centred);
+    label(g, theme.font(11.5f, true), "MASTERING DYNAMICS", sign.withY(96).withHeight(17),
+          ink, Justification::centred);
 
     label(g, theme.font(16.0f, true), inspectorNames[dsp::index(selected)],
-          { inset, inspectorTop, 219, 24 }, ink);
-    label(g, theme.font(10.5f, true), "MOVE", { getWidth() - 125, inspectorTop, 35, 24 },
-          ink, Justification::centredRight);
+          { controlInset, inspectorTop, 218, 24 }, white);
+    label(g, theme.font(10.5f, true), "MOVE", { getWidth() - controlInset - 97, inspectorTop, 35, 24 },
+          muted, Justification::centredRight);
+}
+
+void Editor::drawBumper(Graphics& g)
+{
+    const auto top = getHeight() - bumperDepth;
+    const auto bumper = Rectangle<int>(6, top, getWidth() - 12, bumperDepth - 8).toFloat();
+    g.setGradientFill(ColourGradient(Colour(0xff373b3e), bumper.getX(), bumper.getY(),
+                                    Colour(0xff1b1d20), bumper.getX(), bumper.getBottom(), false));
+    g.fillRoundedRectangle(bumper, 7.0f);
+    g.setColour(Colour(0xff62666a));
+    g.drawRoundedRectangle(bumper.reduced(0.5f), 6.5f, 1.0f);
+    g.setColour(ink);
+    g.drawHorizontalLine(top + 6, bumper.getX() + 9.0f, bumper.getRight() - 9.0f);
+
+    drawPeakMeter(g, "IN", peaks[0], frameInset + 4, top + 17);
+    drawPeakMeter(g, "OUT", peaks[1], frameInset + 4, top + 34);
+    const auto center = Rectangle<int>(209, top + 12, getWidth() - 308, 39);
+    const auto earlyLimiter = settings.limiter.enabled && order.back() != Stage::limiter;
+    label(g, theme.font(10.5f, true),
+          earlyLimiter ? "GAIN AFTER LIMITER CAN EXCEED CEILING" : "STEREO LINKED  /  3 MS LOOKAHEAD",
+          center.withHeight(20), earlyLimiter ? yellow : white);
+    label(g, theme.font(10.0f), "VST3  /  v" SHORT_BUS_VERSION, center.withTrimmedTop(20), muted);
 }
 
 void Editor::paint(Graphics& g)
@@ -509,19 +593,13 @@ void Editor::paint(Graphics& g)
     const auto bounds = plot();
     g.setColour(graph);
     g.fillRoundedRectangle(bounds, 5.0f);
-    g.setColour(ink);
-    g.drawRoundedRectangle(bounds, 5.0f, 1.5f);
+    g.setColour(edge);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 5.0f, 1.0f);
     if (selected == Stage::multiband)
         drawSpectrum(g, bounds);
     else
         drawTransfer(g, bounds);
-
-    const auto footer = Rectangle<int>(150, getHeight() - 48, getWidth() - 296, 22);
-    const auto earlyLimiter = settings.limiter.enabled && order.back() != Stage::limiter;
-    label(g, theme.font(11.0f),
-          earlyLimiter ? "Stages after the limiter can raise the final output." : "STEREO LINKED  /  3 MS LOOKAHEAD",
-          footer.withTrimmedRight(105), earlyLimiter ? yellow : muted);
-    label(g, theme.font(11.0f), "VST3  /  v" SHORT_BUS_VERSION, footer, muted, Justification::centredRight);
+    drawBumper(g);
 }
 
 void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
@@ -562,11 +640,11 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     g.strokePath(trace, PathStrokeType(1.7f));
 
     auto readout = bounds.toNearestInt().removeFromRight(175).reduced(11, 9);
-    label(g, theme.font(10.5f, true), "GAIN CHANGE", readout.removeFromTop(16), muted);
+    label(g, theme.font(10.5f, true), "GAIN CHANGE", readout.removeFromTop(14), muted);
     const auto change = meters.stages[dsp::index(selected)];
-    label(g, theme.font(24.0f, true), signedDb(change), readout.removeFromTop(35), on ? yellow : muted);
+    label(g, theme.font(24.0f, true), signedDb(change), readout.removeFromTop(30), on ? yellow : muted);
     label(g, theme.font(11.5f), selected == Stage::limiter ? "Sample-peak ceiling" : "Static transfer / dBFS",
-          readout.removeFromTop(18), muted);
+          readout.removeFromTop(16), muted);
 }
 
 dsp::Edges Editor::edges(int band) const
