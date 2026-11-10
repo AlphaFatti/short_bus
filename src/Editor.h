@@ -77,7 +77,7 @@ private:
     void limitFrequencySlider(juce::Slider&, dsp::BandEdge);
     void refreshBandControls();
     float limitFrequency(std::size_t band, dsp::BandEdge, float requested) const;
-    void animateBypassLights();
+    void animateLights();
     void moveStage(int direction);
     void applyOrder();
     void updateSpectrum();
@@ -111,6 +111,7 @@ private:
     std::array<float, 2> peaks {};
     std::array<float, 2> lampGlow {};
     double lastLampTick = juce::Time::getMillisecondCounterHiRes();
+    double brakeHoldUntil = 0.0;
     dsp::Order order = dsp::defaultOrder;
     dsp::Stage selected = dsp::Stage::lowLevel;
     int selectedBand = 0;

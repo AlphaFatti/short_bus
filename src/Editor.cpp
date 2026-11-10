@@ -139,6 +139,30 @@ void drawWarningLamp(Graphics& g, Point<float> center, float radius, Colour lens
     g.fillRoundedRectangle(face.reduced(face.getWidth() * 0.12f, face.getHeight() * 0.32f), 2.0f);
 }
 
+void drawMarkerLamp(Graphics& g, float x, bool running, float brake)
+{
+    constexpr float y = 23.5f;
+    if (running)
+    {
+        const auto radius = 10.5f + brake * 5.0f;
+        const auto glow = Colour(0xffff6931).interpolatedWith(Colour(0xffff2418), brake);
+        ColourGradient halo(glow.withAlpha(0.36f + brake * 0.54f), x, y,
+                            Colours::transparentBlack, x + radius, y, true);
+        halo.addColour(0.50, glow.withAlpha(0.16f + brake * 0.45f));
+        g.setGradientFill(halo);
+        g.fillEllipse(x - radius, y - radius, radius * 2.0f, radius * 2.0f);
+    }
+
+    g.setColour(Colour(0xff693818));
+    g.fillRoundedRectangle(x - 8.0f, 19.0f, 16.0f, 9.0f, 2.7f);
+    const auto top = running ? Colour(0xffffad67).interpolatedWith(Colour(0xffff8d60), brake) : Colour(0xffa6372e);
+    const auto bottom = running ? Colour(0xffde4c2a).interpolatedWith(Colour(0xffff2115), brake) : Colour(0xff8c2e25);
+    g.setGradientFill(ColourGradient(top, x, 20.0f, bottom, x, 25.5f, false));
+    g.fillRoundedRectangle(x - 6.0f, 20.0f, 12.0f, 5.5f, 1.6f);
+    g.setColour(running ? Colour(0xffffd78f).interpolatedWith(Colour(0xffffede0), brake) : Colour(0xffc66347));
+    g.fillRoundedRectangle(x - 4.0f, 20.4f, 8.0f, 1.0f, 0.5f);
+}
+
 Path stopSign(Rectangle<float> bounds)
 {
     const auto left = bounds.getX();
@@ -364,6 +388,7 @@ Editor::Editor(Processor& owner)
     setResizeLimits(568, 494, 1040, 820);
     setSize(636, 548);
     selectStage(Stage::lowLevel);
+    processor.consumeOutputPeakEvent();
     startTimerHz(24);
 }
 
@@ -619,15 +644,12 @@ void Editor::drawBus(Graphics& g)
         drawWarningLamp(g, { middle + signWidth * 0.5f - width * 0.025f + offset, 87.0f },
                         lampRadius, lens, outer ? lampGlow[1] : 0.0f);
     }
+    const auto running = !processor.isBypassed();
+    const auto brakeFadeMs = std::max(0.0, lastLampTick - brakeHoldUntil);
+    const auto brake = running && brakeHoldUntil > 0.0 && brakeFadeMs < 360.0
+        ? static_cast<float>(std::exp(-brakeFadeMs / 72.0)) : 0.0f;
     for (auto offset : { -23.0f, 0.0f, 23.0f })
-    {
-        g.setColour(Colour(0xff693818));
-        g.fillRoundedRectangle(middle + offset - 8.0f, 19.0f, 16.0f, 9.0f, 2.7f);
-        g.setColour(Colour(0xffa6372e));
-        g.fillRoundedRectangle(middle + offset - 6.0f, 20.0f, 12.0f, 5.5f, 1.6f);
-        g.setColour(Colour(0xffc66347));
-        g.fillRoundedRectangle(middle + offset - 4.0f, 20.4f, 8.0f, 1.0f, 0.5f);
-    }
+        drawMarkerLamp(g, middle + offset, running, brake);
 
     for (const auto railX : { left + 7.0f, right - 7.0f })
     {
@@ -992,15 +1014,22 @@ void Editor::updateSpectrum()
     }
 }
 
-void Editor::animateBypassLights()
+void Editor::animateLights()
 {
     const auto now = Time::getMillisecondCounterHiRes();
     const auto elapsed = std::max(0.0, now - lastLampTick);
     lastLampTick = now;
+    const auto bypassed = processor.isBypassed();
+    const auto peakHit = processor.consumeOutputPeakEvent();
+    if (bypassed)
+        brakeHoldUntil = 0.0;
+    else if (peakHit)
+        brakeHoldUntil = now + 130.0;
+
     const auto activeSide = static_cast<std::size_t>(now / 500.0) % lampGlow.size();
     for (std::size_t i = 0; i < lampGlow.size(); ++i)
     {
-        const auto target = bypass.getToggleState() && i == activeSide ? 1.0f : 0.0f;
+        const auto target = bypassed && i == activeSide ? 1.0f : 0.0f;
         const auto thermalTimeMs = target > lampGlow[i] ? 52.0 : 105.0;
         const auto retained = static_cast<float>(std::exp(-elapsed / thermalTimeMs));
         lampGlow[i] = target + (lampGlow[i] - target) * retained;
@@ -1029,7 +1058,7 @@ void Editor::timerCallback()
         refreshBandControls();
         updateSpectrum();
     }
-    animateBypassLights();
+    animateLights();
     repaint();
 }
 

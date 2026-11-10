@@ -59,6 +59,8 @@ public:
     void setStripOrder(const dsp::Order&);
     dsp::Metering readMeters() const;
     std::array<float, 2> readPeaks() const;
+    bool isBypassed() const;
+    bool consumeOutputPeakEvent() { return outputPeakPending.exchange(false, std::memory_order_relaxed); }
     bool readSpectrum(float* left, float* right);
     float displayRate() const { return meterRate.load(std::memory_order_relaxed); }
 
@@ -94,6 +96,7 @@ private:
     std::array<StageMeter, dsp::stageCount> stageMeters {};
     std::array<Atomic, dsp::bandCount> bandMeter {};
     Atomic inputPeak {}, outputPeak {}, meterRate { 48000.0f };
+    std::atomic<bool> hostBypassed { false }, outputPeakPending { false };
     juce::AbstractFifo spectrumFifo { fftSize * 4 };
     std::array<dsp::Frame, fftSize * 4> spectrum {};
 };
