@@ -1,0 +1,54 @@
+name: Build Short Bus VST3
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            platform: Windows-x64
+            configure: -G "Visual Studio 17 2022" -A x64
+          - runner: macos-15
+            platform: macOS-arm64
+            configure: -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.configure }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 2
+
+      - name: Test DSP and load VST3
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        shell: bash
+        run: |
+          bundle="build/ShortBus_artefacts/Release/VST3/Short Bus.vst3"
+          test -d "$bundle"
+          mkdir package
+          cp -R "$bundle" package/
+          cp LICENSE package/
+          printf 'Corresponding source\n%s/%s/tree/%s\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" > package/SOURCE.txt
+          python -c "import shutil; shutil.make_archive('Short-Bus-${{ matrix.platform }}', 'zip', 'package')"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Short-Bus-${{ matrix.platform }}
+          path: Short-Bus-${{ matrix.platform }}.zip
+          if-no-files-found: error
