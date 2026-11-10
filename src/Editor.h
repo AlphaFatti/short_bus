@@ -18,6 +18,20 @@ public:
     void mouseUp(const juce::MouseEvent&) override;
 
 private:
+    class BusLookAndFeel final : public juce::LookAndFeel_V4
+    {
+    public:
+        BusLookAndFeel();
+        juce::Font font(float size, bool strong = false) const;
+        juce::Font getTextButtonFont(juce::TextButton&, int height) override;
+        juce::Font getComboBoxFont(juce::ComboBox&) override;
+        juce::Font getLabelFont(juce::Label&) override;
+        juce::Font getPopupMenuFont() override;
+
+    private:
+        juce::Typeface::Ptr regular, bold;
+    };
+
     struct StageButton : juce::Button
     {
         StageButton() : Button(juce::String()) {}
@@ -34,7 +48,9 @@ private:
     void applyOrder();
     void updateSpectrum();
     juce::Rectangle<float> plot() const;
+    void drawBus(juce::Graphics&);
     void drawHeader(juce::Graphics&);
+    void drawPeakMeter(juce::Graphics&, const char* name, float peak, int x, int y);
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
     float frequencyToX(float) const;
@@ -45,6 +61,7 @@ private:
     using ButtonLink = juce::AudioProcessorValueTreeState::ButtonAttachment;
     using ChoiceLink = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     static constexpr std::size_t controlCount = 8;
+    BusLookAndFeel theme;
     Processor& processor;
     dsp::Settings settings;
     dsp::Metering meters;

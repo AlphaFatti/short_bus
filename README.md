@@ -48,6 +48,10 @@ ctest --test-dir build-win -C Release --output-on-failure
 
 The bundle is at `build-win/ShortBus_artefacts/Release/VST3/Short Bus.vst3`.
 
+## Typeface
+
+Short Bus uses a Clearview or ClearviewHwy family when it finds one among your installed fonts. Install your licensed font in Font Book on macOS or in Windows Fonts, then restart your VST3 host. The built-in fallback is [Overpass](https://github.com/RedHatOfficial/Overpass/tree/v3.0.5), distributed under the [SIL Open Font License](assets/Overpass-License.md).
+
 ## Tests and license
 
 CTest runs the DSP checks and opens the built bundle in a VST3 test host. The checks cover curves and gain caps, stereo linking, frequency targeting, fixed latency, the limiter ceiling, live route changes, and VST3 state recall. To build the DSP tests without fetching JUCE, configure with `-DSHORT_BUS_BUILD_PLUGIN=OFF`.

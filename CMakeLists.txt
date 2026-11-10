@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(ShortBus VERSION 0.1.0 LANGUAGES C CXX)
+project(ShortBus VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,10 @@ if(SHORT_BUS_BUILD_PLUGIN)
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(JUCE)
+    juce_add_binary_data(ShortBusFonts
+        HEADER_NAME ShortBusFontData.h
+        NAMESPACE ShortBusFontData
+        SOURCES assets/overpass-regular.otf assets/overpass-bold.otf)
     juce_add_plugin(ShortBus
         COMPANY_NAME "TD Productions"
         BUNDLE_ID "com.tdproductions.shortbus"
@@ -39,7 +43,7 @@ if(SHORT_BUS_BUILD_PLUGIN)
         PRIVATE SHORT_BUS_VERSION="${PROJECT_VERSION}"
         PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
     target_link_libraries(ShortBus
-        PRIVATE short_bus_dsp juce::juce_audio_processors juce::juce_dsp
+        PRIVATE short_bus_dsp ShortBusFonts juce::juce_audio_processors juce::juce_dsp
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
     if(BUILD_TESTING)

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "Editor.h"
+#include "ShortBusFontData.h"
+
+#include <initializer_list>
 
 namespace shortbus
 {
@@ -8,14 +11,22 @@ using dsp::Stage;
 
 namespace
 {
-const auto background = Colour(0xff14171c);
-const auto panel = Colour(0xff20252d);
-const auto graph = Colour(0xff101318);
-const auto edge = Colour(0xff393f49);
-const auto white = Colour(0xfff5f1e9);
-const auto muted = Colour(0xffaeb8c4);
-const auto yellow = Colour(0xffffca54);
+const auto background = Colour(0xff14171b);
+const auto body = Colour(0xffe8a317);
+const auto ink = Colour(0xff1d1b17);
+const auto glass = Colour(0xff243441);
+const auto panel = Colour(0xff20272e);
+const auto graph = Colour(0xff11161b);
+const auto edge = Colour(0xff424d56);
+const auto white = Colour(0xfffff5e3);
+const auto muted = Colour(0xffb3c0cb);
+const auto yellow = Colour(0xffffd475);
 const auto red = Colour(0xfff6877f);
+constexpr int inset = 28;
+constexpr int windowTop = 55;
+constexpr int windowHeight = 45;
+constexpr int inspectorTop = 113;
+constexpr int bandTop = 140;
 const std::array<Colour, dsp::bandCount> bandColours {
     Colour(0xfff0bf58), Colour(0xff73d6b6), Colour(0xff79bbea),
     Colour(0xffb7a7f6), Colour(0xfff090ab)
@@ -48,46 +59,67 @@ String signedDb(float db)
     return (db > 0.05f ? "+" : "") + String(std::abs(db) < 0.05f ? 0.0f : db, 1) + " dB";
 }
 
-void label(Graphics& g, String text, Rectangle<int> bounds, float size, Colour colour,
-           Justification alignment = Justification::centredLeft, bool bold = false)
+String fontKey(const String& family)
 {
-    g.setFont(FontOptions(size, bold ? Font::bold : Font::plain));
+    return family.toLowerCase().retainCharacters("abcdefghijklmnopqrstuvwxyz0123456789");
+}
+
+String clearviewFamily(const StringArray& families, std::initializer_list<const char*> preferred)
+{
+    for (const auto* key : preferred)
+        for (const auto& family : families)
+            if (fontKey(family) == key)
+                return family;
+    for (const auto& family : families)
+        if (fontKey(family).startsWith("clearview"))
+            return family;
+    return {};
+}
+
+Typeface::Ptr installedTypeface(const String& family, bool bold)
+{
+    if (family.isEmpty())
+        return {};
+    const auto styles = Font::findAllTypefaceStyles(family);
+    const auto preferred = bold ? "Bold" : "Regular";
+    const auto style = styles.contains(preferred, true) || styles.isEmpty() ? String(preferred) : styles[0];
+    return Font(FontOptions(family, style, 12.0f)).getTypefacePtr();
+}
+
+void label(Graphics& g, const Font& font, String text, Rectangle<int> bounds, Colour colour,
+           Justification alignment = Justification::centredLeft)
+{
+    g.setFont(font);
     g.setColour(colour);
-    g.drawText(text, bounds, alignment, false);
+    g.drawFittedText(text, bounds, alignment, 1, 0.85f);
 }
 
-void busMark(Graphics& g, float x, float y)
+void drawWheel(Graphics& g, Point<float> center)
 {
-    g.setColour(yellow);
-    g.fillRoundedRectangle(x, y, 36.0f, 17.0f, 3.5f);
-    g.fillRoundedRectangle(x + 32.0f, y + 6.0f, 12.0f, 11.0f, 3.0f);
-    g.setColour(background);
-    for (int i = 0; i < 4; ++i)
-        g.fillRoundedRectangle(x + 4.0f + 7.0f * static_cast<float>(i), y + 3.0f, 5.0f, 5.0f, 0.7f);
-    g.fillRect(x + 1.0f, y + 10.0f, 33.0f, 1.5f);
-    for (auto offset : { 8.0f, 32.0f })
+    const auto circle = [center](float radius)
     {
-        g.fillEllipse(x + offset - 1.0f, y + 13.0f, 9.0f, 9.0f);
-        g.setColour(muted);
-        g.fillEllipse(x + offset + 1.5f, y + 15.5f, 4.0f, 4.0f);
-        g.setColour(background);
+        return Rectangle<float>(radius * 2.0f, radius * 2.0f).withCentre(center);
+    };
+    {
+        const Graphics::ScopedSaveState clip(g);
+        const auto arch = circle(30.0f).withHeight(31.0f).getSmallestIntegerContainer();
+        g.reduceClipRegion(arch);
+        g.setColour(Colour(0xff9c6516));
+        g.fillEllipse(circle(30.0f));
     }
-    g.setColour(red);
-    g.fillEllipse(x + 39.0f, y + 9.0f, 3.0f, 3.0f);
-}
-
-void peakMeter(Graphics& g, String name, float peak, int x, int y)
-{
-    const auto db = dsp::dbFromGain(peak);
-    label(g, name, { x, y, 28, 12 }, 10.5f, muted, Justification::centredLeft, true);
-    const Rectangle<float> track { static_cast<float>(x + 29), static_cast<float>(y + 4), 94.0f, 4.0f };
-    g.setColour(edge);
-    g.fillRoundedRectangle(track, 2.0f);
-    const auto fill = jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
-    g.setColour(db >= 0.0f ? red : yellow);
-    g.fillRoundedRectangle(track.withWidth(track.getWidth() * fill), 2.0f);
-    label(g, db < -60.0f ? "-inf" : String(db, 1), { x + 125, y, 40, 12 },
-          10.5f, db >= 0.0f ? red : white, Justification::centredRight);
+    g.setColour(background);
+    g.fillEllipse(circle(27.0f));
+    g.setColour(Colour(0xff262c31));
+    g.fillEllipse(circle(24.0f));
+    g.setColour(Colour(0xff3b464f));
+    g.drawEllipse(circle(20.5f), 1.3f);
+    g.setColour(Colour(0xff87929b));
+    g.fillEllipse(circle(12.5f));
+    g.setColour(Colour(0xff45515a));
+    g.drawEllipse(circle(10.0f), 1.5f);
+    g.fillEllipse(circle(4.0f));
+    g.setColour(muted);
+    g.fillEllipse(circle(2.0f));
 }
 
 float levelToY(Rectangle<float> area, float db)
@@ -96,27 +128,77 @@ float levelToY(Rectangle<float> area, float db)
 }
 } // namespace
 
+Editor::BusLookAndFeel::BusLookAndFeel()
+{
+    const auto families = Font::findAllTypefaceNames();
+    regular = installedTypeface(clearviewFamily(families,
+        { "clearviewhwy4b", "clearviewhwy4w", "clearviewtext", "clearviewhwy", "clearview" }), false);
+    bold = installedTypeface(clearviewFamily(families,
+        { "clearviewhwy5b", "clearviewhwy5w", "clearviewtext", "clearviewhwy", "clearview" }), true);
+    if (regular == nullptr)
+        regular = Typeface::createSystemTypefaceFor(ShortBusFontData::overpassregular_otf,
+                                                    ShortBusFontData::overpassregular_otfSize);
+    if (bold == nullptr)
+        bold = Typeface::createSystemTypefaceFor(ShortBusFontData::overpassbold_otf,
+                                                 ShortBusFontData::overpassbold_otfSize);
+    setColour(PopupMenu::backgroundColourId, panel);
+    setColour(PopupMenu::textColourId, white);
+    setColour(PopupMenu::highlightedBackgroundColourId, yellow);
+    setColour(PopupMenu::highlightedTextColourId, ink);
+}
+
+Font Editor::BusLookAndFeel::font(float size, bool strong) const
+{
+    return Font(FontOptions(strong ? bold : regular).withHeight(size));
+}
+
+Font Editor::BusLookAndFeel::getTextButtonFont(TextButton&, int height)
+{
+    return font(jlimit(10.5f, 14.0f, static_cast<float>(height) * 0.53f), true);
+}
+
+Font Editor::BusLookAndFeel::getComboBoxFont(ComboBox&)
+{
+    return font(13.0f);
+}
+
+Font Editor::BusLookAndFeel::getLabelFont(Label& label)
+{
+    return font(label.getFont().getHeight(), label.getFont().isBold());
+}
+
+Font Editor::BusLookAndFeel::getPopupMenuFont()
+{
+    return font(14.0f);
+}
+
 void Editor::StageButton::paintButton(Graphics& g, bool hovered, bool pressed)
 {
+    const auto& skin = static_cast<const BusLookAndFeel&>(getLookAndFeel());
     const auto chosen = getToggleState();
     const auto bounds = getLocalBounds().toFloat().reduced(0.5f);
-    g.setColour((chosen ? Colour(0xff30291d) : panel).brighter(hovered || pressed ? 0.10f : 0.0f));
-    g.fillRoundedRectangle(bounds, 6.0f);
-    g.setColour(chosen || hasKeyboardFocus(false) ? yellow : edge);
-    g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
+    g.setColour(ink);
+    g.fillRoundedRectangle(bounds, 5.0f);
+    g.setColour((chosen ? Colour(0xff263f50) : glass).brighter(hovered || pressed ? 0.10f : 0.0f));
+    g.fillRoundedRectangle(bounds.reduced(2.0f), 3.0f);
+    g.setColour(chosen || hasKeyboardFocus(false) ? white : Colour(0xff5b7483));
+    g.drawRoundedRectangle(bounds.reduced(2.0f), 3.0f, 1.0f);
 
-    const auto area = getLocalBounds().reduced(9, 5);
-    label(g, "0" + String(position + 1), area.withWidth(22).withHeight(17), 10.5f, chosen ? yellow : muted,
-          Justification::centredLeft, true);
-    label(g, getName(), area.withTrimmedLeft(23).withHeight(17), 13.0f, white, Justification::centredLeft, true);
-    label(g, enabled ? signedDb(gain) : "OFF", area.withTrimmedLeft(23).withTrimmedTop(19),
-          11.0f, enabled ? yellow : muted);
+    const auto area = getLocalBounds().reduced(9, 4);
+    label(g, skin.font(10.5f, true), "0" + String(position + 1), area.withWidth(20).withHeight(17),
+          chosen ? yellow : muted);
+    label(g, skin.font(13.0f, true), getName(), area.withTrimmedLeft(22).withHeight(17), white);
+    g.setColour(enabled ? yellow : edge);
+    g.fillEllipse(static_cast<float>(area.getX() + 3), static_cast<float>(area.getY() + 25), 5.0f, 5.0f);
+    label(g, skin.font(11.0f), enabled ? signedDb(gain) : "OFF", area.withTrimmedLeft(22).withTrimmedTop(18),
+          enabled ? yellow : muted);
 }
 
 Editor::Editor(Processor& owner)
     : AudioProcessorEditor(owner), processor(owner), settings(owner.currentSettings()),
       order(dsp::orders[static_cast<std::size_t>(settings.order)])
 {
+    setLookAndFeel(&theme);
     levels.fill(-85.0f);
     for (std::size_t i = 0; i < stages.size(); ++i)
     {
@@ -160,20 +242,21 @@ Editor::Editor(Processor& owner)
         auto& slider = sliders[i];
         slider.setSliderStyle(Slider::LinearHorizontal);
         slider.setTextBoxStyle(Slider::TextBoxRight, false, 51, 24);
-        slider.setColour(Slider::trackColourId, yellow.withAlpha(0.77f));
-        slider.setColour(Slider::thumbColourId, yellow);
-        slider.setColour(Slider::backgroundColourId, edge);
-        slider.setColour(Slider::textBoxTextColourId, white);
-        slider.setColour(Slider::textBoxOutlineColourId, edge);
-        labels[i].setColour(Label::textColourId, muted);
-        labels[i].setFont(FontOptions(11.5f));
+        slider.setColour(Slider::trackColourId, Colour(0xff75470d));
+        slider.setColour(Slider::thumbColourId, ink);
+        slider.setColour(Slider::backgroundColourId, ink.withAlpha(0.25f));
+        slider.setColour(Slider::textBoxTextColourId, ink);
+        slider.setColour(Slider::textBoxBackgroundColourId, Colour(0xffffe8b2));
+        slider.setColour(Slider::textBoxOutlineColourId, ink.withAlpha(0.55f));
+        labels[i].setColour(Label::textColourId, ink);
+        labels[i].setFont(theme.font(11.5f, true));
         addChildComponent(slider);
         addChildComponent(labels[i]);
     }
 
     setResizable(true, true);
-    setResizeLimits(620, 392, 1120, 720);
-    setSize(700, 438);
+    setResizeLimits(660, 374, 1120, 720);
+    setSize(770, 408);
     selectStage(Stage::lowLevel);
     startTimerHz(24);
 }
@@ -184,6 +267,7 @@ Editor::~Editor()
     processor.spectrumRequested.store(false, std::memory_order_relaxed);
     if (draggedEdge != nullptr)
         draggedEdge->endChangeGesture();
+    setLookAndFeel(nullptr);
 }
 
 void Editor::selectStage(Stage stage)
@@ -277,15 +361,15 @@ void Editor::applyOrder()
 
 void Editor::resized()
 {
-    const auto content = getLocalBounds().reduced(14, 0);
-    bypass.setBounds(content.getRight() - 72, 18, 72, 25);
-    auto strip = content.withY(58).withHeight(49);
+    const auto content = getLocalBounds().reduced(inset, 0);
+    bypass.setBounds(getWidth() - 220, 20, 72, 24);
+    auto strip = content.withY(windowTop).withHeight(windowHeight).withTrimmedRight(120);
     for (std::size_t i = 0; i < order.size(); ++i)
     {
         const auto slot = strip.removeFromLeft(strip.getWidth() / static_cast<int>(order.size() - i));
         stages[dsp::index(order[i])].setBounds(slot.withTrimmedRight(i + 1 < order.size() ? 6 : 0));
     }
-    auto title = content.withY(114).withHeight(25);
+    auto title = content.withY(inspectorTop).withHeight(24);
     later.setBounds(title.removeFromRight(27));
     title.removeFromRight(3);
     earlier.setBounds(title.removeFromRight(27));
@@ -294,63 +378,150 @@ void Editor::resized()
     title.removeFromRight(7);
     mode.setBounds(title.removeFromRight(160));
 
-    auto bandRow = content.withY(145).withHeight(23);
+    auto bandRow = content.withY(bandTop).withHeight(21);
     bandOn.setBounds(bandRow.removeFromRight(72));
     for (auto& band : bands)
         band.setBounds(bandRow.removeFromLeft(61).withTrimmedRight(4));
 
-    auto controls = content.withY(getHeight() - 106).withHeight(82);
+    auto controls = content.withY(getHeight() - 133).withHeight(78);
     for (std::size_t row = 0; row < 2; ++row)
     {
-        auto line = controls.removeFromTop(41);
+        auto line = controls.removeFromTop(39);
         for (std::size_t column = 0; column < 4; ++column)
         {
             const auto cell = line.removeFromLeft(line.getWidth() / static_cast<int>(4 - column)).reduced(4, 0);
             const auto index = row * 4 + column;
             labels[index].setBounds(cell.withHeight(16));
-            sliders[index].setBounds(cell.withTrimmedTop(16).withHeight(24));
+            sliders[index].setBounds(cell.withTrimmedTop(16).withHeight(22));
         }
     }
 }
 
 Rectangle<float> Editor::plot() const
 {
-    return getLocalBounds().reduced(14, 0).withTrimmedTop(selected == Stage::multiband ? 174 : 147)
-        .withTrimmedBottom(112).toFloat();
+    return getLocalBounds().reduced(inset, 0).withTrimmedTop(selected == Stage::multiband ? 167 : 142)
+        .withTrimmedBottom(138).toFloat();
+}
+
+void Editor::drawBus(Graphics& g)
+{
+    const auto width = static_cast<float>(getWidth());
+    const auto height = static_cast<float>(getHeight());
+    const auto rear = 10.0f;
+    const auto front = width - 10.0f;
+    const auto floor = height - 25.0f;
+
+    Path shell;
+    shell.startNewSubPath(rear, floor - 8.0f);
+    shell.lineTo(rear, 39.0f);
+    shell.quadraticTo(rear, 10.0f, rear + 30.0f, 10.0f);
+    shell.lineTo(front - 157.0f, 10.0f);
+    shell.quadraticTo(front - 134.0f, 10.0f, front - 121.0f, 41.0f);
+    shell.lineTo(front - 91.0f, 105.0f);
+    shell.lineTo(front - 27.0f, 105.0f);
+    shell.quadraticTo(front, 105.0f, front, 132.0f);
+    shell.lineTo(front, floor - 7.0f);
+    shell.quadraticTo(front, floor, front - 7.0f, floor);
+    shell.lineTo(rear + 8.0f, floor);
+    shell.quadraticTo(rear, floor, rear, floor - 8.0f);
+    shell.closeSubPath();
+    g.setColour(body);
+    g.fillPath(shell);
+
+    {
+        const Graphics::ScopedSaveState clip(g);
+        g.reduceClipRegion(shell);
+        g.setColour(Colour(0xffffc44d));
+        g.fillRect(rear, 10.0f, front - rear, 3.0f);
+        g.setColour(ink);
+        g.fillRect(rear, 103.0f, front - rear - 90.0f, 5.0f);
+        g.fillRect(rear, floor - 23.0f, front - rear, 23.0f);
+        g.setColour(Colour(0xffab7115));
+        g.fillRect(rear, floor - 25.0f, front - rear, 2.0f);
+        g.drawVerticalLine(20, 51.0f, floor - 26.0f);
+    }
+
+    Path windshield;
+    windshield.startNewSubPath(front - 132.0f, 50.0f);
+    windshield.lineTo(front - 121.0f, 50.0f);
+    windshield.lineTo(front - 98.0f, 99.0f);
+    windshield.lineTo(front - 132.0f, 99.0f);
+    windshield.closeSubPath();
+    g.setColour(glass);
+    g.fillPath(windshield);
+    g.setColour(ink);
+    g.strokePath(windshield, PathStrokeType(2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+    g.setColour(Colour(0xff688c9e));
+    g.drawLine(front - 129.0f, 54.0f, front - 122.0f, 54.0f, 1.4f);
+    g.drawLine(front - 128.0f, 57.0f, front - 128.0f, 93.0f, 1.1f);
+    g.setColour(ink);
+    g.drawLine(front - 109.0f, 80.0f, front - 91.0f, 92.0f, 2.0f);
+    g.fillRoundedRectangle(front - 94.0f, 88.0f, 7.0f, 13.0f, 2.0f);
+
+    g.fillRoundedRectangle(rear + 2.0f, floor - 98.0f, 9.0f, 31.0f, 3.0f);
+    g.fillRoundedRectangle(front - 14.0f, 149.0f, 13.0f, 25.0f, 3.0f);
+    g.setColour(Colour(0xffd84d3e));
+    g.fillRoundedRectangle(rear + 4.0f, floor - 94.0f, 5.0f, 10.0f, 2.0f);
+    g.setColour(yellow);
+    g.fillRoundedRectangle(rear + 4.0f, floor - 80.0f, 5.0f, 10.0f, 2.0f);
+    g.setColour(white);
+    g.fillRoundedRectangle(front - 12.0f, 152.0f, 9.0f, 14.0f, 2.0f);
+
+    g.setColour(Colour(0xff42474a));
+    g.fillRoundedRectangle(rear - 5.0f, floor - 7.0f, 42.0f, 8.0f, 3.0f);
+    g.fillRoundedRectangle(front - 42.0f, floor - 7.0f, 47.0f, 8.0f, 3.0f);
+    drawWheel(g, { 108.0f, floor - 1.0f });
+    drawWheel(g, { width - 102.0f, floor - 1.0f });
+}
+
+void Editor::drawPeakMeter(Graphics& g, const char* name, float peak, int x, int y)
+{
+    const auto db = dsp::dbFromGain(peak);
+    label(g, theme.font(10.5f, true), name, { x, y, 28, 12 }, ink);
+    const Rectangle<float> track { static_cast<float>(x + 29), static_cast<float>(y + 3), 94.0f, 6.0f };
+    g.setColour(ink);
+    g.fillRoundedRectangle(track, 3.0f);
+    const auto fill = jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
+    g.setColour(db >= 0.0f ? red : yellow);
+    g.fillRoundedRectangle(track.reduced(1.0f).withWidth((track.getWidth() - 2.0f) * fill), 2.0f);
+    label(g, theme.font(10.5f, true), db < -60.0f ? "-inf" : String(db, 1),
+          { x + 125, y, 33, 12 }, ink, Justification::centredRight);
 }
 
 void Editor::drawHeader(Graphics& g)
 {
-    busMark(g, 14.0f, 17.0f);
-    label(g, "Short Bus", { 68, 8, 166, 31 }, 24.0f, white, Justification::centredLeft, true);
-    label(g, "MASTERING DYNAMICS", { 69, 37, 190, 13 }, 10.5f, yellow, Justification::centredLeft, true);
-    peakMeter(g, "IN", peaks[0], getWidth() - 264, 16);
-    peakMeter(g, "OUT", peaks[1], getWidth() - 264, 33);
+    label(g, theme.font(28.0f, true), "SHORT BUS", { inset, 11, 205, 31 }, ink);
+    label(g, theme.font(10.5f, true), "MASTERING DYNAMICS", { inset + 1, 40, 185, 12 }, ink);
+    drawPeakMeter(g, "IN", peaks[0], getWidth() - 393, 17);
+    drawPeakMeter(g, "OUT", peaks[1], getWidth() - 393, 33);
 
-    label(g, inspectorNames[dsp::index(selected)], { 14, 112, 218, 29 }, 16.0f, white,
-          Justification::centredLeft, true);
-    label(g, "MOVE", { getWidth() - 111, 114, 38, 25 }, 10.5f, muted, Justification::centredRight, true);
+    label(g, theme.font(16.0f, true), inspectorNames[dsp::index(selected)],
+          { inset, inspectorTop, 219, 24 }, ink);
+    label(g, theme.font(10.5f, true), "MOVE", { getWidth() - 125, inspectorTop, 35, 24 },
+          ink, Justification::centredRight);
 }
 
 void Editor::paint(Graphics& g)
 {
     g.fillAll(background);
+    drawBus(g);
     drawHeader(g);
     const auto bounds = plot();
     g.setColour(graph);
-    g.fillRoundedRectangle(bounds, 6.0f);
-    g.setColour(edge);
-    g.drawRoundedRectangle(bounds, 6.0f, 1.0f);
+    g.fillRoundedRectangle(bounds, 5.0f);
+    g.setColour(ink);
+    g.drawRoundedRectangle(bounds, 5.0f, 1.5f);
     if (selected == Stage::multiband)
         drawSpectrum(g, bounds);
     else
         drawTransfer(g, bounds);
 
-    const auto footer = Rectangle<int>(14, getHeight() - 22, getWidth() - 28, 17);
+    const auto footer = Rectangle<int>(150, getHeight() - 48, getWidth() - 296, 22);
     const auto earlyLimiter = settings.limiter.enabled && order.back() != Stage::limiter;
-    label(g, earlyLimiter ? "Stages after the limiter can raise the final output." : "Stereo linked   /   3 ms lookahead",
-          footer, 11.0f, earlyLimiter ? yellow : muted);
-    label(g, "VST3   /   v" SHORT_BUS_VERSION, footer, 11.0f, muted, Justification::centredRight);
+    label(g, theme.font(11.0f),
+          earlyLimiter ? "Stages after the limiter can raise the final output." : "STEREO LINKED  /  3 MS LOOKAHEAD",
+          footer.withTrimmedRight(105), earlyLimiter ? yellow : muted);
+    label(g, theme.font(11.0f), "VST3  /  v" SHORT_BUS_VERSION, footer, muted, Justification::centredRight);
 }
 
 void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
@@ -364,8 +535,8 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
         g.setColour(panel);
         g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
         g.drawHorizontalLine(roundToInt(y), area.getX(), area.getRight());
-        label(g, String(roundToInt(db)), { roundToInt(x) - 12, roundToInt(area.getBottom()) + 2, 24, 12 },
-              10.0f, muted, Justification::centred);
+        label(g, theme.font(10.0f), String(roundToInt(db)),
+              { roundToInt(x) - 12, roundToInt(area.getBottom()) + 2, 24, 12 }, muted, Justification::centred);
     }
     g.setColour(edge);
     g.drawLine(area.getBottomLeft().getX(), area.getBottom(), area.getRight(), area.getY(), 1.0f);
@@ -391,11 +562,11 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     g.strokePath(trace, PathStrokeType(1.7f));
 
     auto readout = bounds.toNearestInt().removeFromRight(175).reduced(11, 9);
-    label(g, "GAIN CHANGE", readout.removeFromTop(16), 10.5f, muted, Justification::centredLeft, true);
+    label(g, theme.font(10.5f, true), "GAIN CHANGE", readout.removeFromTop(16), muted);
     const auto change = meters.stages[dsp::index(selected)];
-    label(g, signedDb(change), readout.removeFromTop(35), 24.0f, on ? yellow : muted);
-    label(g, selected == Stage::limiter ? "Sample-peak ceiling" : "Static transfer / dBFS",
-          readout.removeFromTop(18), 11.5f, muted);
+    label(g, theme.font(24.0f, true), signedDb(change), readout.removeFromTop(35), on ? yellow : muted);
+    label(g, theme.font(11.5f), selected == Stage::limiter ? "Sample-peak ceiling" : "Static transfer / dBFS",
+          readout.removeFromTop(18), muted);
 }
 
 dsp::Edges Editor::edges(int band) const
@@ -427,8 +598,8 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
         g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
         const auto position = jlimit(bounds.getX() + 1.0f, bounds.getRight() - 25.0f, x - 12.0f);
         const auto text = frequency < 1000.0f ? String(roundToInt(frequency)) : String(roundToInt(frequency / 1000.0f)) + "k";
-        label(g, text, { roundToInt(position), roundToInt(area.getBottom()) + 3, 24, 12 }, 10.0f, muted,
-              Justification::centred);
+        label(g, theme.font(10.0f), text, { roundToInt(position), roundToInt(area.getBottom()) + 3, 24, 12 },
+              muted, Justification::centred);
     }
     Path trace;
     bool first = true;
@@ -474,9 +645,9 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
             g.fillRect(x, area.getY() + 23.0f, end - x,
                 jlimit(0.0f, 1.0f, -meters.bands[n] / 24.0f) * (area.getHeight() - 23.0f));
     }
-    label(g, signedDb(meters.bands[static_cast<std::size_t>(selectedBand)]),
-          area.toNearestInt().withHeight(16).reduced(13, 0), 11.0f,
-          bandColours[static_cast<std::size_t>(selectedBand)], Justification::centredRight, true);
+    label(g, theme.font(11.0f, true), signedDb(meters.bands[static_cast<std::size_t>(selectedBand)]),
+          area.toNearestInt().withHeight(16).reduced(13, 0),
+          bandColours[static_cast<std::size_t>(selectedBand)], Justification::centredRight);
 }
 
 void Editor::updateSpectrum()

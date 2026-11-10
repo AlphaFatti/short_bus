@@ -42,7 +42,7 @@ jobs:
           test -d "$bundle"
           mkdir package
           cp -R "$bundle" package/
-          cp LICENSE package/
+          cp LICENSE assets/Overpass-License.md package/
           printf 'Corresponding source\n%s/%s/tree/%s\n' \
             "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_SHA" > package/SOURCE.txt
           python -c "import shutil; shutil.make_archive('Short-Bus-${{ matrix.platform }}', 'zip', 'package')"
