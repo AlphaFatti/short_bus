@@ -51,16 +51,17 @@ class Rack
 public:
     void prepare(double rate);
     void configure(const Settings&);
-    Frame process(Frame input);
+    Frame process(Frame input, int tap = 0, Frame* tapped = nullptr);
     Metering meters() const;
     int latency() const { return delaySamples; }
+    bool isReordering() const { return fadeLeft > 0; }
 
 private:
     struct Chain
     {
         void prepare(float rate, int delay);
         void configure(const Settings&);
-        Frame process(Frame input);
+        Frame process(Frame input, int tap = 0, Frame* tapped = nullptr);
         Metering meters() const;
 
         Order order = defaultOrder;

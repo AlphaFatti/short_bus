@@ -41,6 +41,7 @@ private:
         int position = 0;
         float gain = 0.0f;
         bool enabled = false;
+        bool isAnalyzer = false;
     };
 
     struct BypassButton final : juce::Button
@@ -71,7 +72,7 @@ private:
     };
 
     void timerCallback() override;
-    void selectStage(dsp::Stage);
+    void selectTile(std::size_t);
     void bindControls();
     void refreshSettings();
     void limitFrequencySlider(juce::Slider&, dsp::BandEdge);
@@ -81,6 +82,9 @@ private:
     void moveStage(int direction);
     void applyOrder();
     void updateSpectrum();
+    void updateTonalSpectrum();
+    std::uint32_t currentTonalKey() const;
+    bool tonalSelected() const { return selectedTile == tonalTile; }
     juce::Rectangle<float> plot() const;
     juce::Rectangle<float> transferArea() const;
     juce::Rectangle<float> spectrumArea() const;
@@ -96,6 +100,11 @@ private:
     void drawVerticalMeter(juce::Graphics&, const char* name, juce::Rectangle<float>, float db, bool action = false);
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
+    void drawTonalBalance(juce::Graphics&, juce::Rectangle<float>);
+    void drawFineTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
+                      const dsp::TonalCurve& live, int count);
+    void drawBroadTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
+                       const dsp::TonalCurve& live, int count);
     float frequencyToX(float) const;
     dsp::Edges edges(int band) const;
 
@@ -103,6 +112,8 @@ private:
     using ButtonLink = juce::AudioProcessorValueTreeState::ButtonAttachment;
     using ChoiceLink = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
     static constexpr std::size_t controlCount = 8;
+    static constexpr std::size_t tonalTile = dsp::stageCount;
+    static constexpr std::size_t tileCount = tonalTile + 1;
     BusLookAndFeel theme;
     Processor& processor;
     dsp::Settings settings;
@@ -112,20 +123,22 @@ private:
     std::array<float, 2> lampGlow {};
     double lastLampTick = juce::Time::getMillisecondCounterHiRes();
     double brakeHoldUntil = 0.0;
-    dsp::Order order = dsp::defaultOrder;
+    std::array<std::size_t, tileCount> order { 0, 1, 2, 3, tonalTile };
+    std::size_t selectedTile = 0;
     dsp::Stage selected = dsp::Stage::lowLevel;
     int selectedBand = 0;
-    std::array<StageButton, dsp::stageCount> stages;
+    std::array<StageButton, tileCount> stages;
     std::array<juce::TextButton, dsp::bandCount> bands;
     BypassButton bypass;
     juce::TextButton stageOn { "Stage on" }, bandOn { "Band on" };
     juce::TextButton earlier { "<" }, later { ">" };
-    juce::ComboBox mode;
+    juce::TextButton captureReference { "Capture" };
+    juce::ComboBox mode, targetChoice, tonalMode;
     std::array<juce::Slider, controlCount> sliders;
     std::array<juce::Label, controlCount> labels;
     std::array<std::unique_ptr<SliderLink>, controlCount> sliderLinks;
     std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink;
-    std::unique_ptr<ChoiceLink> modeLink;
+    std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink;
     std::optional<GraphDrag> graphDrag;
 
     juce::dsp::FFT fft { Processor::fftOrder };
@@ -133,5 +146,12 @@ private:
                                                 juce::dsp::WindowingFunction<float>::hann, false };
     std::array<std::array<float, Processor::fftSize * 2>, 2> fftBuffer {};
     std::array<float, Processor::fftSize / 2> levels {};
+    juce::dsp::FFT tonalFft { Processor::tonalFftOrder };
+    juce::dsp::WindowingFunction<float> tonalWindow { Processor::tonalFftSize,
+                                                     juce::dsp::WindowingFunction<float>::hann, false };
+    std::array<std::array<float, Processor::tonalFftSize * 2>, 2> tonalBuffer {};
+    dsp::TonalCurve tonalAverage {};
+    std::uint32_t tonalKey = 0;
+    double lastTonalFrame = 0.0;
 };
 } // namespace shortbus

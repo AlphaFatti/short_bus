@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "dsp/Rack.h"
+#include "dsp/TonalBalance.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -263,6 +264,68 @@ void liveReorder()
         previous = rack.process(input)[0];
     check(std::abs(previous - input[0]) < 1.0e-6f, "latency-matched bypass");
 }
+
+void analyzerTap()
+{
+    Settings settings;
+    settings.compressor.enabled = true;
+    settings.compressor.ratio = 1.0f;
+    settings.compressor.makeup = 6.0f;
+    settings.limiter = { true, -3.0f, 0.0f, 30.0f };
+    constexpr Frame input { 0.85f, -0.425f };
+    const auto capped = gainFromDb(-3.0f);
+    const auto amplified = input[0] * gainFromDb(6.0f);
+    for (const auto route : { 0, 1 })
+    {
+        Rack tapped, reference;
+        tapped.prepare(48000.0);
+        reference.prepare(48000.0);
+        settings.order = route;
+        tapped.configure(settings);
+        reference.configure(settings);
+        for (int i = 0; i < 24000; ++i)
+        {
+            const auto slot = 1 + i % 3;
+            Frame observed {};
+            const auto output = tapped.process(input, slot, &observed);
+            check(output == reference.process(input), "analysis tap never changes audio");
+            if (i >= 23997)
+            {
+                const auto expected = slot == 3 ? (route == 0 ? amplified : capped) : input[0];
+                check(std::abs(observed[0] - expected) < 1.0e-4f, "tap reads the current strip order");
+                check(std::abs(observed[1] + 0.5f * observed[0]) < 1.0e-6f, "tap preserves stereo channels");
+            }
+        }
+    }
+}
+
+void tonalBalance()
+{
+    constexpr int fftSize = 16384;
+    constexpr float rate = 48000.0f;
+    std::array<float, fftSize / 2 + 1> left {}, right {};
+    left[256] = 512.0f;
+    right[256] = 512.0f;
+    right[2048] = 256.0f;
+    const auto power = tonalBandPower(left.data(), right.data(), fftSize, rate);
+    const auto curve = normalizedTone(power);
+    const auto band = static_cast<std::size_t>(std::upper_bound(tonalEdges.begin(), tonalEdges.end(), 750.0f)
+                                               - tonalEdges.begin() - 1);
+    check(std::abs(curve[band] - 8.0f / 9.0f) < 1.0e-6f, "tonal spectrum integrates stereo band power");
+    for (auto& value : left)
+        value *= 2.0f;
+    for (auto& value : right)
+        value *= 2.0f;
+    check(normalizedTone(tonalBandPower(left.data(), right.data(), fftSize, rate)) == curve,
+        "tonal comparison is independent of gain");
+    for (const auto& target : tonalTargets)
+        check(std::abs(tonalEnergy(target) - 1.0f) < 1.0e-6f, "starter targets are normalized");
+    const auto usable = tonalBandsAtRate(32000.0f);
+    check(tonalBandsAtRate(rate) == tonalBandCount && usable < tonalBandCount, "analyzer respects Nyquist");
+    const auto limited = normalizedTone(tonalTargets[0], usable);
+    check(std::abs(tonalEnergy(limited) - 1.0f) < 1.0e-6f && limited.back() == 0.0f,
+        "reference comparison uses the available bandwidth");
+}
 } // namespace
 
 int main()
@@ -273,5 +336,7 @@ int main()
     fixedLatency();
     peakCeiling();
     liveReorder();
+    analyzerTap();
+    tonalBalance();
     std::cout << "Short Bus DSP checks passed\n";
 }
