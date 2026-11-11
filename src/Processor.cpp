@@ -14,6 +14,19 @@ const auto brakeThreshold = dsp::gainFromDb(-1.0f) - 1.0e-6f;
 constexpr auto referenceProperty = "tonalReference";
 constexpr auto referenceBandsProperty = "tonalReferenceBands";
 constexpr auto recallSafesProperty = "presetRecallSafes";
+constexpr std::array compressorCharacterParameters { param::compMode, param::optoAttack, param::optoRelease,
+                                                    param::fetAttack, param::fetRelease };
+
+void restoreMissingParameter(AudioProcessorValueTreeState& state, ValueTree& restored, const String& id)
+{
+    if (restored.getChildWithProperty("id", id).isValid())
+        return;
+    auto* parameter = state.getParameter(id);
+    ValueTree defaultState { "PARAM" };
+    defaultState.setProperty("id", id, nullptr);
+    defaultState.setProperty("value", parameter->convertFrom0to1(parameter->getDefaultValue()), nullptr);
+    restored.appendChild(defaultState, nullptr);
+}
 
 void addFloat(Layout& layout, String id, String title, NormalisableRange<float> range, float initial)
 {
@@ -118,6 +131,12 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
         StringArray { "Balanced", "Bass-forward", "Speech", "Captured" }, 0));
     layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::rtaView, 1 }, "RTA View",
         StringArray { "Fine", "Broad" }, 0));
+    layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::compMode, 1 }, "Compressor Mode",
+        StringArray { "Clean", "Opto", "FET" }, 0));
+    addFloat(layout, param::optoAttack, "Compressor Opto Attack", { 1.0f, 100.0f, 0.1f, 0.5f }, dsp::optoTimingDefaults.attack);
+    addFloat(layout, param::optoRelease, "Compressor Opto Release", { 20.0f, 500.0f, 1.0f, 0.5f }, dsp::optoTimingDefaults.release);
+    addFloat(layout, param::fetAttack, "Compressor FET Attack", { 0.02f, 0.8f, 0.001f, 0.5f }, dsp::fetTimingDefaults.attack);
+    addFloat(layout, param::fetRelease, "Compressor FET Release", { 50.0f, 1100.0f, 1.0f, 0.5f }, dsp::fetTimingDefaults.release);
     return layout;
 }
 
@@ -141,6 +160,11 @@ Processor::Processor()
     mode = state.getRawParameterValue(param::mode);
     order = state.getRawParameterValue(param::order);
     rtaSlot = state.getRawParameterValue(param::rtaPosition);
+    compressorMode = state.getRawParameterValue(param::compMode);
+    optoAttack = state.getRawParameterValue(param::optoAttack);
+    optoRelease = state.getRawParameterValue(param::optoRelease);
+    fetAttack = state.getRawParameterValue(param::fetAttack);
+    fetRelease = state.getRawParameterValue(param::fetRelease);
     bypass = state.getRawParameterValue(param::bypass);
     multiOn = state.getRawParameterValue(param::id(param::multi, "enabled"));
     limitOn = state.getRawParameterValue(param::id(param::limit, "enabled"));
@@ -171,6 +195,9 @@ dsp::Settings Processor::currentSettings() const
     settings.lowMode = read(mode) < 0.5f ? dsp::LowMode::expand : dsp::LowMode::lift;
     settings.lowLevel = lowRefs.read();
     settings.compressor = compRefs.read();
+    settings.compressorMode = static_cast<dsp::CompressorMode>(std::clamp(roundToInt(read(compressorMode)), 0, 2));
+    settings.optoTiming = { read(optoAttack), read(optoRelease) };
+    settings.fetTiming = { read(fetAttack), read(fetRelease) };
     settings.multiEnabled = read(multiOn) > 0.5f;
     for (std::size_t i = 0; i < bandRefs.size(); ++i)
     {
@@ -238,6 +265,17 @@ Result Processor::applyPreset(const ValueTree& preset, PresetScope scope)
 {
     if (!preset.hasType(state.state.getType()))
         return Result::fail("The preset settings are incompatible.");
+    const auto hasSettings = std::any_of(preset.begin(), preset.end(), [this, scope](const ValueTree& child)
+    {
+        const auto id = child.getProperty("id").toString();
+        return state.getParameter(id) != nullptr && presetIncludesParameter(scope, id);
+    });
+    if (!hasSettings)
+        return Result::fail("The preset is empty.");
+    auto complete = preset.createCopy();
+    if (scope == PresetScope::bus || scope == PresetScope::compressor)
+        for (const auto* id : compressorCharacterParameters)
+            restoreMissingParameter(state, complete, id);
     struct Change { RangedAudioParameter* parameter; float value; };
     std::vector<Change> changes;
     int recognized = 0;
@@ -255,7 +293,7 @@ Result Processor::applyPreset(const ValueTree& preset, PresetScope scope)
                 return (safeMask & (1u << i)) != 0;
         return false;
     };
-    for (const auto& child : preset)
+    for (const auto& child : complete)
     {
         const auto id = child.getProperty("id").toString();
         auto* parameter = state.getParameter(id);
@@ -535,21 +573,12 @@ void Processor::setStateInformation(const void* data, int size)
             auto restored = ValueTree::fromXml(*xml);
             setPresetRecallSafes(static_cast<unsigned>(static_cast<int>(restored.getProperty(recallSafesProperty,
                                                                                            static_cast<int>(defaultPresetSafes)))));
-            const auto restoreDefault = [&](const String& id)
-            {
-                if (!restored.getChildWithProperty("id", id).isValid())
-                {
-                    auto* parameter = state.getParameter(id);
-                    ValueTree defaultState { "PARAM" };
-                    defaultState.setProperty("id", id, nullptr);
-                    defaultState.setProperty("value", parameter->convertFrom0to1(parameter->getDefaultValue()), nullptr);
-                    restored.appendChild(defaultState, nullptr);
-                }
-            };
             for (int i = 0; i < dsp::bandCount; ++i)
-                restoreDefault(param::id(param::band(i), param::bandLift));
+                restoreMissingParameter(state, restored, param::id(param::band(i), param::bandLift));
             for (const auto* id : { param::rtaPosition, param::rtaTarget, param::rtaView })
-                restoreDefault(id);
+                restoreMissingParameter(state, restored, id);
+            for (const auto* id : compressorCharacterParameters)
+                restoreMissingParameter(state, restored, id);
             setTonalReference(readReference(restored));
             state.replaceState(restored);
         }

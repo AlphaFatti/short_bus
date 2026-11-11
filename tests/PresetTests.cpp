@@ -114,5 +114,41 @@ int main()
         processor->processBlock(audio, midi);
     }
     require(near(audio.getSample(0, 255), 0.2f * dsp::gainFromDb(6.0f)), "preset recall reaches the audio callback");
+    set(*processor, param::compMode, 1.0f);
+    set(*processor, param::optoAttack, 32.0f);
+    const auto optoPreset = processor->presetState(PresetScope::compressor);
+    set(*processor, param::compMode, 2.0f);
+    set(*processor, param::optoAttack, 10.0f);
+    require(processor->applyPreset(optoPreset, PresetScope::compressor).wasOk()
+            && processor->currentSettings().compressorMode == dsp::CompressorMode::opto
+            && near(processor->currentSettings().optoTiming.attack, 32.0f), "unit preset recalls mode and its timing");
+
+    auto legacyUnit = unit.createCopy();
+    constexpr std::array characterIds { param::compMode, param::optoAttack, param::optoRelease, param::fetAttack, param::fetRelease };
+    for (const auto* id : characterIds)
+        legacyUnit.removeChild(legacyUnit.getChildWithProperty("id", id), nullptr);
+    set(*processor, param::compMode, 2.0f);
+    require(processor->applyPreset(legacyUnit, PresetScope::compressor).wasOk()
+            && processor->currentSettings().compressorMode == dsp::CompressorMode::clean, "older unit presets restore Clean");
+    auto legacyBus = loaded.createCopy();
+    for (const auto* id : characterIds)
+        legacyBus.removeChild(legacyBus.getChildWithProperty("id", id), nullptr);
+    set(*processor, param::compMode, 2.0f);
+    processor->setPresetRecallSafes(1u << 2);
+    require(processor->applyPreset(legacyBus, PresetScope::bus).wasOk()
+            && processor->currentSettings().compressorMode == dsp::CompressorMode::fet, "Compressor safe protects the mode");
+    processor->setPresetRecallSafes(0);
+    require(processor->applyPreset(legacyBus, PresetScope::bus).wasOk()
+            && processor->currentSettings().compressorMode == dsp::CompressorMode::clean, "older Bus presets restore Clean");
+
+    MemoryBlock hostState;
+    processor->getStateInformation(hostState);
+    auto legacyHost = ValueTree::fromXml(*AudioProcessor::getXmlFromBinary(hostState.getData(), static_cast<int>(hostState.getSize())));
+    for (const auto* id : characterIds)
+        legacyHost.removeChild(legacyHost.getChildWithProperty("id", id), nullptr);
+    AudioProcessor::copyXmlToBinary(*legacyHost.createXml(), hostState);
+    set(*processor, param::compMode, 2.0f);
+    processor->setStateInformation(hostState.getData(), static_cast<int>(hostState.getSize()));
+    require(processor->currentSettings().compressorMode == dsp::CompressorMode::clean, "older host sessions restore Clean");
     std::cout << "Preset files, scopes, safes, validation and tile orders passed\n";
 }

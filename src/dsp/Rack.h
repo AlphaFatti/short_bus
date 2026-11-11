@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #pragma once
 
-#include "Dynamics.h"
+#include "Compressor.h"
 
 namespace shortbus::dsp
 {
@@ -66,7 +66,8 @@ private:
 
         Order order = defaultOrder;
         float sampleRate = 48000.0f;
-        Broadband lowLevel, compressor;
+        Broadband lowLevel;
+        Compressor compressor;
         std::array<Band, bandCount> bands;
         Limiter limiter;
         std::array<StageMetering, stageCount> stageMeters {};

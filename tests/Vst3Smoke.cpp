@@ -95,6 +95,8 @@ int main(int argc, char** argv)
     set(*plugin, "RTA Position", "2");
     set(*plugin, "RTA Target", "Speech");
     set(*plugin, "RTA View", "Broad");
+    set(*plugin, "Compressor Mode", "FET");
+    set(*plugin, "Compressor FET Attack", "0.02");
     require(std::abs(processConstant(*plugin, 20, 0.01f) - 0.03981f) < 0.001f, "moving RTA changed audio");
     MemoryBlock saved;
     plugin->getStateInformation(saved);
@@ -107,6 +109,8 @@ int main(int argc, char** argv)
     require(std::abs(parameter(*recalled, "RTA Position").getValue() - 0.5f) < 0.0001f, "RTA position failed to recall");
     require(std::abs(parameter(*recalled, "RTA Target").getValue() - 2.0f / 3.0f) < 0.0001f, "RTA target failed to recall");
     require(parameter(*recalled, "RTA View").getValue() > 0.99f, "RTA view failed to recall");
+    require(parameter(*recalled, "Compressor Mode").getValue() > 0.99f, "Compressor mode failed to recall");
+    require(parameter(*recalled, "Compressor FET Attack").getValue() < 0.001f, "FET attack failed to recall");
     require(processConstant(*recalled, 180) > 1.20f, "Restored VST3 state lost order or settings");
     require(std::abs(processConstant(*recalled, 180, 0.01f) - 0.03981f) < 0.001f, "Restored VST3 state lost band lift");
     parameter(*recalled, "Bypass").setValueNotifyingHost(1.0f);

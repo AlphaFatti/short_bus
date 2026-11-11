@@ -4,6 +4,7 @@
 #include "ShortBusFontData.h"
 
 #include <initializer_list>
+#include <string_view>
 
 namespace shortbus
 {
@@ -416,7 +417,9 @@ Editor::Editor(Processor& owner)
     mode.setTitle("Low-level mode");
     targetChoice.setTitle("Tonal balance target");
     tonalMode.setTitle("Tonal balance view");
-    for (auto* choice : { &mode, &targetChoice, &tonalMode })
+    compressorModeBox.setTitle("Compressor mode");
+    compressorModeBox.setTooltip("Clean uses the original peak compressor. Opto has RMS sensing and optical memory. FET has fast feedback compression.");
+    for (auto* choice : { &mode, &targetChoice, &tonalMode, &compressorModeBox })
     {
         choice->setColour(ComboBox::backgroundColourId, panel);
         choice->setColour(ComboBox::textColourId, white);
@@ -427,6 +430,7 @@ Editor::Editor(Processor& owner)
     mode.addItem("Upward compression", 2);
     targetChoice.addItemList({ "Balanced", "Bass-forward", "Speech", "Captured" }, 1);
     tonalMode.addItemList({ "Fine", "Broad" }, 1);
+    compressorModeBox.addItemList({ "Clean", "Opto", "FET" }, 1);
     style(captureReference);
     captureReference.setTitle("Capture the average at this tap");
     captureReference.setEnabled(false);
@@ -443,6 +447,7 @@ Editor::Editor(Processor& owner)
     modeLink = std::make_unique<ChoiceLink>(processor.state, param::mode, mode);
     targetLink = std::make_unique<ChoiceLink>(processor.state, param::rtaTarget, targetChoice);
     tonalModeLink = std::make_unique<ChoiceLink>(processor.state, param::rtaView, tonalMode);
+    compressorModeLink = std::make_unique<ChoiceLink>(processor.state, param::compMode, compressorModeBox);
     bypassLink = std::make_unique<ButtonLink>(processor.state, param::bypass, bypass);
     for (std::size_t i = 0; i < sliders.size(); ++i)
     {
@@ -504,7 +509,9 @@ void Editor::bindControls()
     setMouseCursor(MouseCursor::NormalCursor);
     refreshSettings();
     const auto isTonal = tonalSelected();
+    boundCompressorMode = settings.compressorMode;
     const auto isMulti = !isTonal && selected == Stage::multiband;
+    compressorModeBox.setVisible(!isTonal && selected == Stage::compressor);
     mode.setVisible(!isTonal && selected == Stage::lowLevel);
     for (auto* control : std::array<Component*, 3> { &targetChoice, &tonalMode, &captureReference })
         control->setVisible(isTonal);
@@ -539,9 +546,15 @@ void Editor::bindControls()
     std::size_t slot = 0;
     const auto bind = [&](const String& prefix, Control control)
     {
-        sliders[slot].setTitle(control.label);
-        labels[slot].setText(control.label, dontSendNotification);
-        sliderLinks[slot] = std::make_unique<SliderLink>(processor.state, param::id(prefix, control.id), sliders[slot]);
+        const auto timing = std::string_view(control.id) == "attack" || std::string_view(control.id) == "release";
+        const auto characterTiming = selected == Stage::compressor && timing && settings.compressorMode != dsp::CompressorMode::clean;
+        const auto timingPrefix = settings.compressorMode == dsp::CompressorMode::opto ? "opto_" : "fet_";
+        const auto id = prefix + "_" + (characterTiming ? String(timingPrefix) : String()) + control.id;
+        const auto* title = characterTiming && settings.compressorMode == dsp::CompressorMode::opto
+            && std::string_view(control.id) == "release" ? "Fast release (ms)" : control.label;
+        sliders[slot].setTitle(title);
+        labels[slot].setText(title, dontSendNotification);
+        sliderLinks[slot] = std::make_unique<SliderLink>(processor.state, id, sliders[slot]);
         sliders[slot].setVisible(true);
         labels[slot++].setVisible(true);
     };
@@ -800,6 +813,8 @@ void Editor::resized()
             sliders[index].setBounds(cell.withTrimmedTop(14).withHeight(22));
         }
     }
+    auto modeArea = plot().withLeft(transferArea().getRight() + 8.0f + 3.0f * stageMeterWidth).toNearestInt().reduced(8, 9);
+    compressorModeBox.setBounds(modeArea.removeFromBottom(24));
 }
 
 Rectangle<float> Editor::plot() const
@@ -1105,10 +1120,12 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     else
     {
         hint("Threshold left/right");
-        hint(isLow ? "Below  /  range up/down" : "Below  /  gain up/down");
-        if (!isLow)
+        hint(isLow ? "Below  /  range up/down" : bounds.getHeight() < 145.0f ? "Gain / ratio up/down" : "Below  /  gain up/down");
+        if (!isLow && bounds.getHeight() >= 145.0f)
             hint("Above  /  ratio up/down");
     }
+    if (selected == Stage::compressor && bounds.getHeight() >= 145.0f)
+        label(g, theme.font(10.0f, true), "MODE", compressorModeBox.getBounds().translated(0, -14).withHeight(12), muted);
 }
 
 dsp::Edges Editor::edges(int band) const
@@ -1476,6 +1493,8 @@ void Editor::timerCallback()
 {
     const auto previous = order;
     applyOrder();
+    if (!tonalSelected() && selected == Stage::compressor && boundCompressorMode != settings.compressorMode)
+        bindControls();
     if (order != previous)
         resized();
     meters = processor.readMeters();
