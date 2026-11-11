@@ -509,6 +509,7 @@ void Editor::bindControls()
     setMouseCursor(MouseCursor::NormalCursor);
     refreshSettings();
     const auto isTonal = tonalSelected();
+    boundCompressorMode = settings.compressorMode;
     const auto isMulti = !isTonal && selected == Stage::multiband;
     compressorModeBox.setVisible(!isTonal && selected == Stage::compressor);
     mode.setVisible(!isTonal && selected == Stage::lowLevel);
@@ -1491,9 +1492,8 @@ void Editor::animateLights()
 void Editor::timerCallback()
 {
     const auto previous = order;
-    const auto previousMode = settings.compressorMode;
     applyOrder();
-    if (!tonalSelected() && selected == Stage::compressor && previousMode != settings.compressorMode)
+    if (!tonalSelected() && selected == Stage::compressor && boundCompressorMode != settings.compressorMode)
         bindControls();
     if (order != previous)
         resized();

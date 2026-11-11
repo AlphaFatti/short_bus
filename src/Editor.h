@@ -148,6 +148,7 @@ private:
     std::array<std::size_t, tileCount> order { 0, 1, 2, 3, tonalTile };
     std::size_t selectedTile = 0;
     dsp::Stage selected = dsp::Stage::lowLevel;
+    dsp::CompressorMode boundCompressorMode = dsp::CompressorMode::clean;
     int selectedBand = 0;
     std::array<StageButton, tileCount> stages;
     std::array<juce::TextButton, dsp::bandCount> bands;
