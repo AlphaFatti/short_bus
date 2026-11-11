@@ -6,9 +6,13 @@
 
 namespace shortbus
 {
-enum class PresetScope { lowLevel, multiband, compressor, limiter, rta, bus };
-constexpr int presetSafeCount = 7;
-constexpr unsigned defaultPresetSafes = 1u << 6;
+enum class PresetScope { lowLevel, multiband, compressor, limiter, rta, bus, geq };
+constexpr int presetSafeCount = 8;
+constexpr unsigned orderRecallSafe = 1u << 4;
+constexpr unsigned rtaRecallSafe = 1u << 5;
+constexpr unsigned bypassRecallSafe = 1u << 6;
+constexpr unsigned geqRecallSafe = 1u << 7;
+constexpr unsigned defaultPresetSafes = bypassRecallSafe;
 
 const char* presetScopeName(PresetScope);
 bool presetIncludesParameter(PresetScope, const juce::String& id);

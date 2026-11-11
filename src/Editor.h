@@ -30,6 +30,10 @@ private:
         juce::Font getComboBoxFont(juce::ComboBox&) override;
         juce::Font getLabelFont(juce::Label&) override;
         juce::Font getPopupMenuFont() override;
+        void drawLinearSlider(juce::Graphics&, int x, int y, int width, int height, float position,
+                              float min, float max, juce::Slider::SliderStyle, juce::Slider&) override;
+        void drawRotarySlider(juce::Graphics&, int x, int y, int width, int height, float position,
+                              float startAngle, float endAngle, juce::Slider&) override;
 
     private:
         juce::Typeface::Ptr regular, bold;
@@ -47,6 +51,8 @@ private:
         float gain = 0.0f;
         bool enabled = false;
         bool isAnalyzer = false;
+        bool showsGain = true;
+        bool showPosition = true;
         bool dragging = false;
     };
 
@@ -107,7 +113,10 @@ private:
     void updateTonalSpectrum();
     std::uint32_t currentTonalKey() const;
     bool tonalSelected() const { return selectedTile == tonalTile; }
+    bool geqSelected() const { return !tonalSelected() && selected == dsp::Stage::geq; }
+    PresetScope presetScope() const;
     juce::Rectangle<float> plot() const;
+    juce::Rectangle<int> geqControls() const;
     juce::Rectangle<float> transferArea() const;
     juce::Rectangle<float> spectrumArea() const;
     juce::Point<float> bandNode(int band) const;
@@ -123,6 +132,7 @@ private:
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
     void drawTonalBalance(juce::Graphics&, juce::Rectangle<float>);
+    void drawGraphicEq(juce::Graphics&);
     void drawFineTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
                       const dsp::TonalCurve& live, int count);
     void drawBroadTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
@@ -145,7 +155,7 @@ private:
     std::array<float, 2> lampGlow {};
     double lastLampTick = juce::Time::getMillisecondCounterHiRes();
     double brakeHoldUntil = 0.0;
-    std::array<std::size_t, tileCount> order { 0, 1, 2, 3, tonalTile };
+    Processor::TileOrder order {};
     std::size_t selectedTile = 0;
     dsp::Stage selected = dsp::Stage::lowLevel;
     dsp::CompressorMode boundCompressorMode = dsp::CompressorMode::clean;
@@ -156,10 +166,15 @@ private:
     juce::TextButton stageOn { "Stage on" }, bandOn { "Band on" };
     juce::TextButton earlier { "<" }, later { ">" };
     juce::TextButton captureReference { "Capture" };
+    juce::TextButton flatEq { "Flat EQ" };
     juce::ComboBox mode, targetChoice, tonalMode, compressorModeBox;
+    juce::Slider rtaSensitivity, saturationDial;
+    std::array<juce::Slider, dsp::geqBandCount> geqFaders;
     std::array<juce::Slider, controlCount> sliders;
     std::array<juce::Label, controlCount> labels;
     std::array<std::unique_ptr<SliderLink>, controlCount> sliderLinks;
+    std::array<std::unique_ptr<SliderLink>, dsp::geqBandCount> geqLinks;
+    std::unique_ptr<SliderLink> sensitivityLink, saturationLink;
     std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink;
     std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink, compressorModeLink;
     std::optional<GraphDrag> graphDrag;

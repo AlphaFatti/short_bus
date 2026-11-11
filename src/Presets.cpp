@@ -8,7 +8,7 @@ using namespace juce;
 
 const char* presetScopeName(PresetScope scope)
 {
-    constexpr std::array names { "Expand-Lift", "5-Band", "Compressor", "Limiter", "RTA", "Bus" };
+    constexpr std::array names { "Expand-Lift", "5-Band", "Compressor", "Limiter", "RTA", "Bus", "GEQ" };
     return names[static_cast<std::size_t>(scope)];
 }
 
@@ -20,8 +20,9 @@ bool presetIncludesParameter(PresetScope scope, const String& id)
         case PresetScope::multiband: return id.startsWith("multi_") || id.startsWith("band");
         case PresetScope::compressor: return id.startsWith("comp_");
         case PresetScope::limiter: return id.startsWith("limit_");
-        case PresetScope::rta: return id == param::rtaTarget || id == param::rtaView;
+        case PresetScope::rta: return id == param::rtaTarget || id == param::rtaView || id == param::rtaFloor;
         case PresetScope::bus: return true;
+        case PresetScope::geq: return id.startsWith("geq_");
     }
     return false;
 }

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Compressor.h"
+#include "GraphicEq.h"
 
 namespace shortbus::dsp
 {
@@ -70,6 +71,7 @@ private:
         Compressor compressor;
         std::array<Band, bandCount> bands;
         Limiter limiter;
+        GraphicEq geq;
         std::array<StageMetering, stageCount> stageMeters {};
     };
 

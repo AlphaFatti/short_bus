@@ -11,7 +11,7 @@ namespace shortbus::dsp
 {
 using Frame = std::array<float, 2>;
 
-enum class Stage : std::uint8_t { lowLevel, multiband, compressor, limiter };
+enum class Stage : std::uint8_t { lowLevel, multiband, compressor, limiter, geq };
 enum class LowMode : std::uint8_t { expand, lift };
 enum class CompressorMode : std::uint8_t { clean, opto, fet };
 
@@ -19,9 +19,11 @@ struct CompressorTiming { float attack; float release; };
 constexpr CompressorTiming optoTimingDefaults { 10.0f, 60.0f };
 constexpr CompressorTiming fetTimingDefaults { 0.2f, 150.0f };
 
-constexpr int stageCount = 4;
+constexpr int dynamicsStageCount = 4;
+constexpr int stageCount = dynamicsStageCount + 1;
 constexpr int bandCount = 5;
-constexpr int orderCount = 24;
+constexpr int dynamicsOrderCount = 24;
+constexpr int orderCount = dynamicsOrderCount * stageCount;
 constexpr float minHz = 20.0f;
 constexpr float maxHz = 20000.0f;
 constexpr int edgeWidthNumerator = 28;
@@ -31,22 +33,68 @@ constexpr float lookaheadMs = 3.0f;
 constexpr float maxRangeDb = 24.0f;
 
 using Order = std::array<Stage, stageCount>;
-constexpr Order defaultOrder { Stage::lowLevel, Stage::multiband, Stage::compressor, Stage::limiter };
+using DynamicsOrder = std::array<Stage, dynamicsStageCount>;
+constexpr DynamicsOrder defaultDynamicsOrder { Stage::lowLevel, Stage::multiband, Stage::compressor, Stage::limiter };
 
 constexpr std::size_t index(Stage stage) { return static_cast<std::size_t>(stage); }
 
-inline constexpr auto orders = []
+inline constexpr auto dynamicsOrders = []
 {
-    std::array<Order, orderCount> result {};
+    std::array<DynamicsOrder, dynamicsOrderCount> result {};
     std::size_t i = 0;
-    for (auto a : defaultOrder)
-        for (auto b : defaultOrder)
-            for (auto c : defaultOrder)
-                for (auto d : defaultOrder)
+    for (auto a : defaultDynamicsOrder)
+        for (auto b : defaultDynamicsOrder)
+            for (auto c : defaultDynamicsOrder)
+                for (auto d : defaultDynamicsOrder)
                     if (a != b && a != c && a != d && b != c && b != d && c != d)
                         result[i++] = { a, b, c, d };
     return result;
 }();
+
+template <std::size_t N>
+constexpr int stagePosition(const std::array<Stage, N>& route, Stage stage)
+{
+    for (std::size_t i = 0; i < route.size(); ++i)
+        if (route[i] == stage)
+            return static_cast<int>(i);
+    return static_cast<int>(N);
+}
+
+constexpr int rackOrderIndex(int dynamicsOrder, int geqPosition)
+{
+    const auto limiter = stagePosition(dynamicsOrders[static_cast<std::size_t>(dynamicsOrder)], Stage::limiter);
+    if (geqPosition < 0 || geqPosition == limiter)
+        return dynamicsOrder;
+    const auto offset = geqPosition < limiter ? geqPosition + 1 : geqPosition;
+    return dynamicsOrder + offset * dynamicsOrderCount;
+}
+
+inline constexpr auto orders = []
+{
+    std::array<Order, orderCount> result {};
+    for (int i = 0; i < dynamicsOrderCount; ++i)
+    {
+        const auto& dynamics = dynamicsOrders[static_cast<std::size_t>(i)];
+        for (int geq = 0; geq < stageCount; ++geq)
+        {
+            auto& route = result[static_cast<std::size_t>(rackOrderIndex(i, geq))];
+            for (int slot = 0; slot < stageCount; ++slot)
+                route[static_cast<std::size_t>(slot)] = slot == geq ? Stage::geq
+                    : dynamics[static_cast<std::size_t>(slot - (slot > geq ? 1 : 0))];
+        }
+    }
+    return result;
+}();
+
+constexpr Order defaultOrder = orders.front();
+
+constexpr std::array geqFrequencies {
+    20.0f, 25.0f, 31.5f, 40.0f, 50.0f, 63.0f, 80.0f, 100.0f, 125.0f, 160.0f,
+    200.0f, 250.0f, 315.0f, 400.0f, 500.0f, 630.0f, 800.0f, 1000.0f, 1250.0f, 1600.0f,
+    2000.0f, 2500.0f, 3150.0f, 4000.0f, 5000.0f, 6300.0f, 8000.0f, 10000.0f, 12500.0f, 16000.0f, 20000.0f
+};
+constexpr auto geqBandCount = geqFrequencies.size();
+constexpr float geqRangeDb = 12.0f;
 
 inline float gainFromDb(float db) { return std::exp(db * 0.11512925465f); }
 inline float dbFromGain(float gain) { return 20.0f * std::log10(std::max(gain, 1.0e-9f)); }
@@ -113,6 +161,13 @@ struct LimiterSettings
     float release = 100.0f;
 };
 
+struct GraphicEqSettings
+{
+    bool enabled = false;
+    std::array<float, geqBandCount> gains {};
+    float saturation = 0.0f;
+};
+
 struct Settings
 {
     DynamicsSettings lowLevel = lowDefaults;
@@ -124,6 +179,7 @@ struct Settings
     CompressorTiming optoTiming = optoTimingDefaults;
     CompressorTiming fetTiming = fetTimingDefaults;
     LimiterSettings limiter;
+    GraphicEqSettings geq;
     bool bypass = false;
     int order = 0;
 };

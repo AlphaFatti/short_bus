@@ -8,6 +8,21 @@ namespace shortbus::dsp
 {
 constexpr int tonalBandCount = 30;
 using TonalCurve = std::array<float, tonalBandCount>;
+constexpr float defaultRtaFloorDb = -65.0f;
+
+inline bool tonalAboveFloor(const float* left, const float* right, int samples, float floorDb, bool active)
+{
+    double power = 0.0;
+    for (int i = 0; i < samples; ++i)
+    {
+        const auto l = static_cast<double>(left[i]);
+        const auto r = static_cast<double>(right[i]);
+        power += l * l + r * r;
+    }
+    // Require a little more level to open than to keep displaying the current signal.
+    const auto minimum = gainFromDb(floorDb + (active ? 0.0f : 3.0f));
+    return samples > 0 && std::isfinite(power) && power >= 2.0 * samples * minimum * minimum;
+}
 
 struct TonalReference
 {

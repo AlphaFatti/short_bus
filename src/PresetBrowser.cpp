@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "PresetBrowser.h"
+#include "BusColours.h"
 
 namespace shortbus
 {
 using namespace juce;
 namespace
 {
-const auto glass = Colour(0xff262e34);
+const auto glass = Colour(0xff253139);
+const auto glassShade = Colour(0xff152028);
+const auto rubber = Colour(0xff101416);
 const auto white = Colour(0xfffff5e3);
 const auto muted = Colour(0xffb3c0cb);
 const auto yellow = Colour(0xffffd475);
+constexpr int foldedLeafWidth = 54;
 
 void stylePresetButton(TextButton& button)
 {
@@ -57,6 +61,7 @@ void PresetSection::setScope(PresetScope next)
     safes.setVisible(scope == PresetScope::bus);
     list.deselectAllRows();
     entries.clear();
+    list.updateContent();
     load.setEnabled(false);
     empty.setVisible(true);
     refresh();
@@ -97,10 +102,14 @@ void PresetSection::resized()
 
 void PresetSection::paint(Graphics& g)
 {
-    g.setColour(glass);
-    g.fillRoundedRectangle(getLocalBounds().toFloat(), 3.0f);
-    g.setColour(Colour(0xff667178));
-    g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 3.0f, 1.0f);
+    const auto pane = getLocalBounds().toFloat().reduced(1.0f);
+    g.setGradientFill(ColourGradient(glass.brighter(0.12f), pane.getX(), pane.getY(),
+                                    glassShade, pane.getX(), pane.getBottom(), false));
+    g.fillRoundedRectangle(pane, 2.5f);
+    g.setColour(rubber);
+    g.drawRoundedRectangle(pane, 2.5f, 2.0f);
+    g.setColour(bumperEdge);
+    g.drawRoundedRectangle(pane.reduced(2.0f), 1.5f, 0.6f);
 }
 
 int PresetSection::getNumRows() { return static_cast<int>(entries.size()); }
@@ -170,7 +179,7 @@ void PresetSection::saveCurrent()
 void PresetSection::showSafes()
 {
     constexpr std::array names { "Expand / Lift", "5-Band", "Compressor", "Limiter",
-                                 "Order + RTA position", "RTA target + reference", "Bypass" };
+                                 "Order + RTA position", "RTA settings + reference", "Bypass", "GEQ + saturation" };
     PopupMenu menu;
     menu.addSectionHeader("Keep current settings on Bus recall");
     const auto mask = processor.presetRecallSafes();
@@ -210,26 +219,62 @@ PresetBrowser::PresetBrowser(Processor& owner)
 
 void PresetBrowser::resized()
 {
-    auto bounds = getLocalBounds().reduced(12, 7);
+    auto bounds = getLocalBounds().withTrimmedRight(foldedLeafWidth).reduced(12, 10);
     auto footer = bounds.removeFromBottom(24);
     folder.setBounds(footer.removeFromLeft(51));
     status.setBounds(footer.withTrimmedLeft(3));
-    bounds.removeFromBottom(5);
-    unit.setBounds(bounds.removeFromTop((bounds.getHeight() - 8) / 2));
-    bounds.removeFromTop(8);
+    bounds.removeFromBottom(7);
+    unit.setBounds(bounds.removeFromTop((bounds.getHeight() - 13) / 2));
+    bounds.removeFromTop(13);
     bus.setBounds(bounds);
 }
 
 void PresetBrowser::paint(Graphics& g)
 {
     const auto frame = getLocalBounds().toFloat().reduced(1.0f);
-    g.setGradientFill(ColourGradient(Colour(0xff707e85), frame.getX(), frame.getY(),
-                                    Colour(0xff414d54), frame.getRight(), frame.getBottom(), false));
-    g.fillRoundedRectangle(frame, 4.0f);
-    g.setColour(Colour(0xffe8a317));
-    g.drawRoundedRectangle(frame, 4.0f, 2.0f);
-    g.setColour(Colour(0xff20272b));
-    g.fillRoundedRectangle(frame.reduced(5.0f), 2.0f);
+    const auto front = frame.withTrimmedRight(static_cast<float>(foldedLeafWidth));
+    const auto fold = front.getRight();
+    const auto folded = frame.withLeft(fold - 1.0f);
+    const auto raked = [](Rectangle<float> bounds, float inset)
+    {
+        Path shape;
+        shape.startNewSubPath(bounds.getTopLeft());
+        shape.lineTo(bounds.getTopRight().translated(0.0f, inset));
+        shape.lineTo(bounds.getBottomRight().translated(0.0f, -inset));
+        shape.lineTo(bounds.getBottomLeft());
+        shape.closeSubPath();
+        return shape;
+    };
+    const auto returnLeaf = raked(folded, 12.0f);
+    g.setGradientFill(ColourGradient(bumperTop, frame.getX(), frame.getY(),
+                                    bumperBottom, frame.getX(), frame.getBottom(), false));
+    g.fillRoundedRectangle(front, 3.5f);
+    g.fillPath(returnLeaf);
+    g.setColour(bumperEdge);
+    g.drawRoundedRectangle(front, 3.5f, 1.0f);
+    g.strokePath(returnLeaf, PathStrokeType(1.0f));
+
+    // The narrow return leaf shows the fold and its windows in perspective.
+    for (const auto& section : { unit.getBounds(), bus.getBounds() })
+    {
+        const auto opening = folded.reduced(8.0f, 0.0f).withY(static_cast<float>(section.getY() + 7))
+            .withHeight(static_cast<float>(section.getHeight() - 11));
+        const auto pane = raked(opening, 7.0f);
+        ColourGradient reflection(glassShade, opening.getX(), opening.getY(),
+                                  glass, opening.getRight(), opening.getBottom(), false);
+        reflection.addColour(0.43, Colour(0xff455d6b));
+        reflection.addColour(0.50, Colour(0xff283b46));
+        g.setGradientFill(reflection);
+        g.fillPath(pane);
+        g.setColour(rubber);
+        g.strokePath(pane, PathStrokeType(2.5f));
+        g.setColour(bumperEdge.withAlpha(0.65f));
+        g.strokePath(pane, PathStrokeType(0.6f));
+    }
+    g.setColour(rubber);
+    g.fillRect(fold - 2.0f, front.getY() + 3.0f, 4.0f, front.getHeight() - 6.0f);
+    g.setColour(bumperEdge.withAlpha(0.65f));
+    g.drawVerticalLine(roundToInt(fold + 2.0f), front.getY() + 4.0f, front.getBottom() - 4.0f);
 }
 
 void PresetBrowser::visibilityChanged()

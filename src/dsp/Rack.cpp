@@ -87,6 +87,7 @@ void Rack::Chain::prepare(float rate, int delay)
     bands = {};
     stageMeters = {};
     limiter.prepare(rate, delay);
+    geq.prepare(rate);
 }
 
 void Rack::Chain::configure(const Settings& settings)
@@ -104,6 +105,7 @@ void Rack::Chain::configure(const Settings& settings)
         bands[i].configure(sampleRate, band, settings.multiEnabled);
     }
     limiter.configure(settings.limiter);
+    geq.configure(settings.geq);
 }
 
 Frame Rack::Chain::process(Frame input, int tap, Frame* tapped)
@@ -125,6 +127,7 @@ Frame Rack::Chain::process(Frame input, int tap, Frame* tapped)
             }
             case Stage::compressor: input = compressor.process(input); break;
             case Stage::limiter: input = limiter.process(input); break;
+            case Stage::geq: input = geq.process(input); break;
         }
         amplitude = peak(input);
         meter.outputPeak = std::max(meter.outputPeak, amplitude);

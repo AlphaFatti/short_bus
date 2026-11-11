@@ -283,16 +283,18 @@ void analyzerTap()
         settings.order = route;
         tapped.configure(settings);
         reference.configure(settings);
+        const auto expected = route == 0 ? std::array { input[0], input[0], amplified, amplified }
+                                         : std::array { input[0], input[0], input[0], capped };
         for (int i = 0; i < 24000; ++i)
         {
-            const auto slot = 1 + i % 3;
+            const auto slot = 1 + i % 4;
             Frame observed {};
             const auto output = tapped.process(input, slot, &observed);
             check(output == reference.process(input), "analysis tap never changes audio");
-            if (i >= 23997)
+            if (i >= 23996)
             {
-                const auto expected = slot == 3 ? (route == 0 ? amplified : capped) : input[0];
-                check(std::abs(observed[0] - expected) < 1.0e-4f, "tap reads the current strip order");
+                check(std::abs(observed[0] - expected[static_cast<std::size_t>(slot - 1)]) < 1.0e-4f,
+                      "tap reads the current strip order");
                 check(std::abs(observed[1] + 0.5f * observed[0]) < 1.0e-6f, "tap preserves stereo channels");
             }
         }
@@ -325,6 +327,85 @@ void tonalBalance()
     const auto limited = normalizedTone(tonalTargets[0], usable);
     check(std::abs(tonalEnergy(limited) - 1.0f) < 1.0e-6f && limited.back() == 0.0f,
         "reference comparison uses the available bandwidth");
+
+    for (std::size_t i = 0; i < left.size(); ++i)
+    {
+        left[i] = (i % 2 == 0 ? 1.0f : -1.0f) * gainFromDb(-76.0f);
+        right[i] = -left[i];
+    }
+    const auto samples = static_cast<int>(left.size());
+    check(!tonalAboveFloor(left.data(), right.data(), samples, defaultRtaFloorDb, true),
+          "idle noise closes an active analyzer");
+    check(tonalAboveFloor(left.data(), right.data(), samples, -85.0f, false),
+          "lowering the floor shows quiet stereo audio without phase cancellation");
+}
+
+void graphicEq()
+{
+    constexpr double twoPi = 6.2831853071795864769;
+    for (const auto rate : { 44100, 48000, 96000 })
+    {
+        for (const auto band : { std::size_t { 0 }, std::size_t { 17 }, geqBandCount - 1 })
+        {
+            for (const auto gain : { -12.0f, 12.0f })
+            {
+                GraphicEq eq;
+                eq.prepare(static_cast<float>(rate));
+                GraphicEqSettings settings;
+                settings.enabled = true;
+                settings.gains[band] = gain;
+                eq.configure(settings);
+                double inputPower = 0.0, outputPower = 0.0;
+                for (int i = 0; i < rate * 2; ++i)
+                {
+                    const auto tone = static_cast<float>(0.1 * std::sin(twoPi * geqFrequencies[band] * i / rate));
+                    const auto output = eq.process({ tone, -0.5f * tone });
+                    check(std::isfinite(output[0]) && std::abs(output[1] + 0.5f * output[0]) < 1.0e-6f,
+                          "GEQ preserves stereo balance and stays finite");
+                    if (i >= rate)
+                    {
+                        inputPower += tone * tone;
+                        outputPower += output[0] * output[0];
+                    }
+                }
+                check(std::abs(10.0 * std::log10(outputPower / inputPower) - gain) < 0.08,
+                      "GEQ reaches the selected gain at the band center");
+            }
+        }
+    }
+
+    GraphicEq eq;
+    eq.prepare(32000.0f);
+    GraphicEqSettings settings;
+    settings.enabled = true;
+    settings.gains.back() = 12.0f;
+    eq.configure(settings);
+    constexpr Frame input { 0.8f, -0.8f };
+    check(eq.process(input) == input, "flat GEQ and bands above Nyquist pass audio exactly");
+
+    eq.prepare(48000.0f);
+    settings.gains.fill(0.0f);
+    settings.saturation = 100.0f;
+    eq.configure(settings);
+    double fundamental = 0.0, harmonic = 0.0;
+    for (int i = 0; i < 4800; ++i)
+    {
+        const auto phase = twoPi * i / 48.0;
+        const auto tone = static_cast<float>(0.8 * std::sin(phase));
+        const auto output = eq.process({ tone, -tone });
+        fundamental += output[0] * std::sin(phase);
+        harmonic += output[0] * std::sin(phase * 3.0);
+        check(std::abs(output[0]) <= std::abs(tone) && output[0] == -output[1],
+              "saturation rounds peaks symmetrically");
+    }
+    check(fundamental > 0.0 && std::abs(harmonic) > 0.04 * fundamental,
+          "saturation adds a third harmonic");
+    settings.saturation = 0.0f;
+    eq.configure(settings);
+    Frame output {};
+    for (int i = 0; i < 8000; ++i)
+        output = eq.process(input);
+    check(output == input, "returning saturation to zero restores the flat signal exactly");
 }
 } // namespace
 
@@ -338,5 +419,6 @@ int main()
     liveReorder();
     analyzerTap();
     tonalBalance();
+    graphicEq();
     std::cout << "Short Bus DSP checks passed\n";
 }
