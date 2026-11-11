@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(ShortBus VERSION 0.1.10 LANGUAGES C CXX)
+project(ShortBus VERSION 0.1.11 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,6 +55,11 @@ if(SHORT_BUS_BUILD_PLUGIN)
             "$<TARGET_PROPERTY:juce::juce_audio_processors,INTERFACE_INCLUDE_DIRECTORIES>")
         target_link_libraries(short_bus_preset_tests PRIVATE ShortBus)
         add_test(NAME short_bus_preset_tests COMMAND short_bus_preset_tests)
+        add_executable(short_bus_meter_tests tests/MeterTests.cpp)
+        target_include_directories(short_bus_meter_tests PRIVATE src
+            "$<TARGET_PROPERTY:juce::juce_audio_processors,INTERFACE_INCLUDE_DIRECTORIES>")
+        target_link_libraries(short_bus_meter_tests PRIVATE ShortBus)
+        add_test(NAME short_bus_meter_tests COMMAND short_bus_meter_tests)
         add_executable(short_bus_vst3_smoke tests/Vst3Smoke.cpp)
         target_compile_definitions(short_bus_vst3_smoke PRIVATE JUCE_PLUGINHOST_VST3=1 JUCE_USE_CURL=0)
         target_link_libraries(short_bus_vst3_smoke PRIVATE juce::juce_audio_processors_headless)

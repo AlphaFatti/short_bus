@@ -54,6 +54,7 @@ public:
     void configure(const Settings&);
     Frame process(Frame input, int tap = 0, Frame* tapped = nullptr);
     Metering meters() const;
+    Metering takeMeters();
     int latency() const { return delaySamples; }
     bool isReordering() const { return fadeLeft > 0; }
 

@@ -78,6 +78,16 @@ void addDynamics(Layout& layout, String prefix, String name, dsp::DynamicsSettin
 
 float read(const std::atomic<float>* value) { return value->load(std::memory_order_relaxed); }
 
+void mergeMeterPeaks(dsp::Metering& destination, const dsp::Metering& source)
+{
+    for (std::size_t i = 0; i < destination.stages.size(); ++i)
+    {
+        auto& level = destination.stages[i];
+        level.inputPeak = std::max(level.inputPeak, source.stages[i].inputPeak);
+        level.outputPeak = std::max(level.outputPeak, source.stages[i].outputPeak);
+    }
+}
+
 void setDiscreteValue(AudioProcessorValueTreeState& state, const char* id, int value)
 {
     auto* parameter = state.getParameter(id);
@@ -441,7 +451,11 @@ void Processor::prepareToPlay(double rate, int)
     renderRtaPosition = rtaPositionForOrder(renderSettings.order);
     setLatencySamples(rack.latency());
     meterRate.store(static_cast<float>(rate), std::memory_order_relaxed);
-    spectrumEpoch.fetch_add(1, std::memory_order_relaxed);
+    analysisEpoch.fetch_add(1, std::memory_order_relaxed);
+    historyWindowSamples = std::max(1, static_cast<int>(std::lround(rate / historyHz)));
+    historySamples = 0;
+    historySequence = 0;
+    historyWindow = {};
     inputPeak.store(0.0f, std::memory_order_relaxed);
     outputPeak.store(0.0f, std::memory_order_relaxed);
     hostBypassed.store(false, std::memory_order_relaxed);
@@ -493,11 +507,13 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     auto settings = renderSettings;
     settings.bypass = settings.bypass || hostBypass;
     rack.configure(settings);
+    const auto& route = dsp::orders[static_cast<std::size_t>(settings.order)];
     const auto view = spectrumRequested.load(std::memory_order_relaxed);
-    const auto position = view == SpectrumView::tonal ? renderRtaPosition : dsp::stageCount;
+    const auto position = view == SpectrumView::tonal ? renderRtaPosition
+        : view == SpectrumView::geq ? dsp::stagePosition(route, dsp::Stage::geq) + 1 : dsp::stageCount;
     const auto key = spectrumKey(view, settings.order, position, settings.bypass);
     const auto tap = settings.bypass && position < dsp::stageCount ? 0 : position;
-    const auto capture = view != SpectrumView::none && (view != SpectrumView::tonal || !rack.isReordering());
+    const auto capture = view != SpectrumView::none && (view == SpectrumView::output || !rack.isReordering());
     const auto region = spectrumFifo.write(capture ? frames : 0);
     const auto captured = region.blockSize1 + region.blockSize2;
     const auto sequence = spectrumSequence;
@@ -505,6 +521,15 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     auto* left = audio.getWritePointer(0);
     auto* right = audio.getNumChannels() == 2 ? audio.getWritePointer(1) : nullptr;
     float in = 0.0f, out = 0.0f;
+    dsp::Metering earlierPeaks;
+    const auto collectHistory = historyRequested.load(std::memory_order_relaxed);
+    const auto tapKey = collectHistory && !rack.isReordering()
+        ? spectrumKey(SpectrumView::tonal, settings.order, renderRtaPosition, settings.bypass) : 0u;
+    if (!collectHistory && historySamples > 0)
+    {
+        historySamples = 0;
+        historyWindow = {};
+    }
     const auto finite = [](float value) { return std::isfinite(value) ? value : 0.0f; };
     for (int i = 0; i < frames; ++i)
     {
@@ -524,6 +549,13 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
             const auto signal = interstage ? tapped : (tap == 0 ? input : output);
             spectrum[static_cast<std::size_t>(slot)] = { signal, key, sequence + static_cast<std::uint32_t>(i) };
         }
+        if (collectHistory && ++historySamples >= historyWindowSamples)
+        {
+            const auto window = rack.takeMeters();
+            mergeMeterPeaks(earlierPeaks, window);
+            accumulateHistory(window, route, renderRtaPosition, settings.bypass, tapKey);
+            publishHistory();
+        }
     }
 
     const auto decay = std::exp(-static_cast<float>(frames) / (0.25f * displayRate()));
@@ -535,7 +567,10 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     updatePeak(outputPeak, out);
     if (settings.bypass || out >= brakeThreshold)
         outputPeakPending.store(!settings.bypass, std::memory_order_relaxed);
-    const auto metering = rack.meters();
+    auto metering = rack.meters();
+    if (collectHistory && historySamples > 0)
+        accumulateHistory(metering, route, renderRtaPosition, settings.bypass, tapKey);
+    mergeMeterPeaks(metering, earlierPeaks);
     for (std::size_t i = 0; i < stageMeters.size(); ++i)
     {
         auto& meter = stageMeters[i];
@@ -546,6 +581,66 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     }
     for (std::size_t i = 0; i < bandMeter.size(); ++i)
         bandMeter[i].store(metering.bands[i], std::memory_order_relaxed);
+}
+
+void Processor::accumulateHistory(dsp::Metering slice, const dsp::Order& route, int tap, bool bypassed, std::uint32_t key)
+{
+    const auto input = slice.stages[dsp::index(route.front())].inputPeak;
+    if (bypassed)
+    {
+        slice.stages.fill({ input, 0.0f, input });
+        slice.bands.fill(0.0f);
+    }
+    if (historyWindow.tapKey != key)
+    {
+        historyWindow.tapKey = key;
+        historyWindow.tapPeak = 0.0f;
+    }
+    const auto tapPeak = tap == 0 ? input : slice.stages[dsp::index(route[static_cast<std::size_t>(tap - 1)])].outputPeak;
+    historyWindow.tapPeak = std::max(historyWindow.tapPeak, tapPeak);
+    auto& levels = historyWindow.levels;
+    mergeMeterPeaks(levels, slice);
+    for (std::size_t i = 0; i < levels.stages.size(); ++i)
+        if (std::abs(slice.stages[i].gainDb) > std::abs(levels.stages[i].gainDb))
+            levels.stages[i].gainDb = slice.stages[i].gainDb;
+    for (std::size_t i = 0; i < levels.bands.size(); ++i)
+        if (std::abs(slice.bands[i]) > std::abs(levels.bands[i]))
+            levels.bands[i] = slice.bands[i];
+}
+
+void Processor::publishHistory()
+{
+    historyWindow.epoch = analysisEpoch.load(std::memory_order_relaxed);
+    historyWindow.sequence = historySequence++;
+    const auto region = historyFifo.write(1);
+    if (region.blockSize1 > 0)
+        historyQueue[static_cast<std::size_t>(region.startIndex1)] = historyWindow;
+    historyWindow = {};
+    historySamples = 0;
+}
+
+void Processor::setMeterHistoryActive(bool active)
+{
+    if (active)
+        historyFifo.finishedRead(historyFifo.getNumReady());
+    historyRequested.store(active, std::memory_order_relaxed);
+}
+
+int Processor::readMeterHistory(HistoryFrame* destination, int capacity)
+{
+    const auto available = historyFifo.getNumReady();
+    const auto region = historyFifo.read(available);
+    const auto count = std::min(available, capacity);
+    const auto epoch = analysisEpoch.load(std::memory_order_relaxed);
+    int copied = 0;
+    for (int i = available - count; i < available; ++i)
+    {
+        const auto slot = i < region.blockSize1 ? region.startIndex1 + i : region.startIndex2 + i - region.blockSize1;
+        const auto& frame = historyQueue[static_cast<std::size_t>(slot)];
+        if (frame.epoch == epoch)
+            destination[copied++] = frame;
+    }
+    return copied;
 }
 
 dsp::Metering Processor::readMeters() const
@@ -573,10 +668,17 @@ bool Processor::isBypassed() const
 
 std::uint32_t Processor::spectrumKey(SpectrumView view, int orderIndex, int position, bool bypassed) const
 {
-    const auto source = view == SpectrumView::tonal
-        ? 2 + 2 * (orderIndex * (dsp::stageCount + 1) + position) + static_cast<int>(bypassed) : 1;
-    constexpr auto keysPerEpoch = 2u + 2u * dsp::orderCount * (dsp::stageCount + 1u);
-    return spectrumEpoch.load(std::memory_order_relaxed) * keysPerEpoch + static_cast<std::uint32_t>(source);
+    constexpr auto keysPerTapView = 2u * dsp::orderCount * (dsp::stageCount + 1u);
+    constexpr auto keysPerEpoch = 2u + 2u * keysPerTapView;
+    auto source = 1u;
+    if (view == SpectrumView::tonal || view == SpectrumView::geq)
+    {
+        source = 2u + static_cast<std::uint32_t>(2 * (orderIndex * (dsp::stageCount + 1) + position))
+            + static_cast<std::uint32_t>(bypassed);
+        if (view == SpectrumView::geq)
+            source += keysPerTapView;
+    }
+    return analysisEpoch.load(std::memory_order_relaxed) * keysPerEpoch + source;
 }
 
 bool Processor::readSpectrum(float* left, float* right, int count, std::uint32_t key)

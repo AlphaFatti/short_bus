@@ -13,7 +13,6 @@ const auto rubber = Colour(0xff101416);
 const auto white = Colour(0xfffff5e3);
 const auto muted = Colour(0xffb3c0cb);
 const auto yellow = Colour(0xffffd475);
-constexpr int foldedLeafWidth = 54;
 
 void stylePresetButton(TextButton& button)
 {
@@ -219,7 +218,7 @@ PresetBrowser::PresetBrowser(Processor& owner)
 
 void PresetBrowser::resized()
 {
-    auto bounds = getLocalBounds().withTrimmedRight(foldedLeafWidth).reduced(12, 10);
+    auto bounds = getLocalBounds().reduced(12, 10);
     auto footer = bounds.removeFromBottom(24);
     folder.setBounds(footer.removeFromLeft(51));
     status.setBounds(footer.withTrimmedLeft(3));
@@ -232,49 +231,11 @@ void PresetBrowser::resized()
 void PresetBrowser::paint(Graphics& g)
 {
     const auto frame = getLocalBounds().toFloat().reduced(1.0f);
-    const auto front = frame.withTrimmedRight(static_cast<float>(foldedLeafWidth));
-    const auto fold = front.getRight();
-    const auto folded = frame.withLeft(fold - 1.0f);
-    const auto raked = [](Rectangle<float> bounds, float inset)
-    {
-        Path shape;
-        shape.startNewSubPath(bounds.getTopLeft());
-        shape.lineTo(bounds.getTopRight().translated(0.0f, inset));
-        shape.lineTo(bounds.getBottomRight().translated(0.0f, -inset));
-        shape.lineTo(bounds.getBottomLeft());
-        shape.closeSubPath();
-        return shape;
-    };
-    const auto returnLeaf = raked(folded, 12.0f);
     g.setGradientFill(ColourGradient(bumperTop, frame.getX(), frame.getY(),
                                     bumperBottom, frame.getX(), frame.getBottom(), false));
-    g.fillRoundedRectangle(front, 3.5f);
-    g.fillPath(returnLeaf);
+    g.fillRoundedRectangle(frame, 3.5f);
     g.setColour(bumperEdge);
-    g.drawRoundedRectangle(front, 3.5f, 1.0f);
-    g.strokePath(returnLeaf, PathStrokeType(1.0f));
-
-    // The narrow return leaf shows the fold and its windows in perspective.
-    for (const auto& section : { unit.getBounds(), bus.getBounds() })
-    {
-        const auto opening = folded.reduced(8.0f, 0.0f).withY(static_cast<float>(section.getY() + 7))
-            .withHeight(static_cast<float>(section.getHeight() - 11));
-        const auto pane = raked(opening, 7.0f);
-        ColourGradient reflection(glassShade, opening.getX(), opening.getY(),
-                                  glass, opening.getRight(), opening.getBottom(), false);
-        reflection.addColour(0.43, Colour(0xff455d6b));
-        reflection.addColour(0.50, Colour(0xff283b46));
-        g.setGradientFill(reflection);
-        g.fillPath(pane);
-        g.setColour(rubber);
-        g.strokePath(pane, PathStrokeType(2.5f));
-        g.setColour(bumperEdge.withAlpha(0.65f));
-        g.strokePath(pane, PathStrokeType(0.6f));
-    }
-    g.setColour(rubber);
-    g.fillRect(fold - 2.0f, front.getY() + 3.0f, 4.0f, front.getHeight() - 6.0f);
-    g.setColour(bumperEdge.withAlpha(0.65f));
-    g.drawVerticalLine(roundToInt(fold + 2.0f), front.getY() + 4.0f, front.getBottom() - 4.0f);
+    g.drawRoundedRectangle(frame, 3.5f, 1.0f);
 }
 
 void PresetBrowser::visibilityChanged()
