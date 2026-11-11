@@ -236,6 +236,16 @@ void PresetBrowser::paint(Graphics& g)
     g.fillRoundedRectangle(frame, 3.5f);
     g.setColour(bumperEdge);
     g.drawRoundedRectangle(frame, 3.5f, 1.0f);
+
+    const auto divider = 0.5f * static_cast<float>(unit.getBottom() + bus.getY());
+    const Rectangle<float> handle { frame.getRight() - 9.0f, divider - 12.0f, 5.0f, 24.0f };
+    g.setColour(rubber);
+    g.fillRoundedRectangle(handle.expanded(1.0f), 2.5f);
+    ColourGradient metal(Colour(0xff4b5155), handle.getX(), handle.getY(),
+                         Colour(0xff555d62), handle.getRight(), handle.getY(), false);
+    metal.addColour(0.42, Colour(0xffaeb7bb));
+    g.setGradientFill(metal);
+    g.fillRoundedRectangle(handle, 1.8f);
 }
 
 void PresetBrowser::visibilityChanged()

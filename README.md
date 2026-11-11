@@ -31,9 +31,13 @@ Preset files use the **.shortbus** extension in a **Short Bus Presets** folder b
 
 The default order is Expand / Lift → 5-Band → Compressor → GEQ → Limiter. Every stage starts off. Global **Bypass** preserves the plugin's delay so you can A/B without a timing jump. The three small roof lights glow while Short Bus is active and flare red when the final output reaches −1 dBFS. In bypass, the two large red lamps alternate with an incandescent fade. The limiter ceiling is measured at its own output in dBFS. For a ceiling on the final output, keep it at the end of the rack and leave downstream gain at unity. Its sample-peak detector measures discrete samples. The plugin reports approximately 3 ms of latency to the host in every order.
 
+## Install a preview
+
+Download the ZIP for Apple Silicon or Windows x64 and follow the install steps on the release page. [GitHub Releases](https://github.com/AlphaFatti/short_bus/releases)
+
 ## Install in OBS 33 on Windows 11
 
-1. Download the **Short-Bus-Windows-x64** artifact from a successful run of [Build Short Bus VST3](https://github.com/AlphaFatti/short_bus/actions/workflows/build.yml) and extract the plugin archive inside it.
+1. Download and extract the Windows x64 ZIP from the [release page](https://github.com/AlphaFatti/short_bus/releases).
 2. Copy the entire **Short Bus.vst3** folder into `C:\Program Files\Common Files\VST3`.
 3. In OBS, open the filters for the stereo source that carries your stream bus. Add **atkAudio PluginHost** or **PluginHost2**, scan VST3 plugins, and select **Short Bus**. Open its editor from the host.
 4. Play a recorded service or a music-and-speech test mix, then enable and tune the stages you need. Check audio/video sync and confirm that your settings and order return after an OBS restart before going live.
