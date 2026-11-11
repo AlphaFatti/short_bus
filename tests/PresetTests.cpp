@@ -17,7 +17,7 @@ void require(bool value, const char* message)
     }
 }
 
-void set(Processor& processor, const char* id, float value)
+void set(Processor& processor, const String& id, float value)
 {
     auto* parameter = processor.state.getParameter(id);
     parameter->setValueNotifyingHost(parameter->convertTo0to1(value));
@@ -95,10 +95,10 @@ int main()
     require(processor->applyPreset(invalid, PresetScope::bus).failed(), "invalid data is rejected");
     require(near(processor->currentSettings().lowLevel.threshold, -35.0f), "invalid recall has no partial changes");
 
-    const Processor::TileOrder route { 4, 3, 2, 1, 0 };
+    const Processor::TileOrder route { 5, 4, 3, 2, 1, 0 };
     processor->setTileOrder(route);
     require(processor->tileOrder() == route, "full tile order round trips");
-    processor->setTileOrder({ 4, 3, 2, 1, 1 });
+    processor->setTileOrder({ 5, 4, 3, 2, 1, 1 });
     require(processor->tileOrder() == route, "invalid tile order is rejected");
     auto audible = unit.createCopy();
     audible.getChildWithProperty("id", "comp_enabled").setProperty("value", 1.0f, nullptr);
@@ -150,5 +150,49 @@ int main()
     set(*processor, param::compMode, 2.0f);
     processor->setStateInformation(hostState.getData(), static_cast<int>(hostState.getSize()));
     require(processor->currentSettings().compressorMode == dsp::CompressorMode::clean, "older host sessions restore Clean");
+
+    Processor::TileOrder permutation { 0, 1, 2, 3, 4, 5 };
+    do
+    {
+        processor->setTileOrder(permutation);
+        require(processor->tileOrder() == permutation, "GEQ and RTA route permutations round trip");
+    } while (std::next_permutation(permutation.begin(), permutation.end()));
+
+    set(*processor, param::geqEnabled, 1.0f);
+    set(*processor, param::geqGain(17), 6.0f);
+    set(*processor, param::saturation, 65.0f);
+    set(*processor, param::rtaFloor, -50.0f);
+    const auto eqPreset = processor->presetState(PresetScope::geq);
+    set(*processor, param::geqGain(17), -6.0f);
+    set(*processor, param::saturation, 0.0f);
+    require(processor->applyPreset(eqPreset, PresetScope::geq).wasOk()
+            && near(processor->currentSettings().geq.gains[17], 6.0f)
+            && near(processor->currentSettings().geq.saturation, 65.0f), "GEQ presets recall faders and saturation");
+
+    const auto rtaPreset = processor->presetState(PresetScope::rta);
+    set(*processor, param::rtaFloor, -80.0f);
+    require(processor->applyPreset(rtaPreset, PresetScope::rta).wasOk()
+            && near(processor->state.getRawParameterValue(param::rtaFloor)->load(), -50.0f), "RTA preset recalls the floor");
+
+    for (int i = legacyBus.getNumChildren(); --i >= 0;)
+    {
+        const auto child = legacyBus.getChild(i);
+        const auto id = child.getProperty("id").toString();
+        if (presetIncludesParameter(PresetScope::geq, id) || id == param::rtaFloor
+            || id == param::geqPosition || id == param::rtaAfterGeq)
+            legacyBus.removeChild(i, nullptr);
+    }
+    processor->setPresetRecallSafes(geqRecallSafe | rtaRecallSafe | orderRecallSafe);
+    const auto savedRoute = processor->tileOrder();
+    require(processor->applyPreset(legacyBus, PresetScope::bus).wasOk()
+            && processor->currentSettings().geq.enabled && processor->tileOrder() == savedRoute
+            && near(processor->state.getRawParameterValue(param::rtaFloor)->load(), -50.0f),
+            "recall safes protect the GEQ, sensitivity and both routing positions");
+    processor->setPresetRecallSafes(0);
+    require(processor->applyPreset(legacyBus, PresetScope::bus).wasOk()
+            && !processor->currentSettings().geq.enabled && near(processor->currentSettings().geq.saturation, 0.0f)
+            && near(processor->state.getRawParameterValue(param::rtaFloor)->load(), dsp::defaultRtaFloorDb)
+            && processor->currentSettings().order == 7,
+            "older Bus presets load with a neutral GEQ and their original dynamics order");
     std::cout << "Preset files, scopes, safes, validation and tile orders passed\n";
 }

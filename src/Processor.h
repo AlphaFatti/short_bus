@@ -18,10 +18,16 @@ inline constexpr auto low = "low";
 inline constexpr auto multi = "multi";
 inline constexpr auto comp = "comp";
 inline constexpr auto limit = "limit";
+inline constexpr auto geq = "geq";
+inline constexpr auto geqEnabled = "geq_enabled";
+inline constexpr auto saturation = "geq_saturation";
+inline constexpr auto geqPosition = "rack_geq_position";
 inline constexpr auto bandLift = "lift";
 inline constexpr auto rtaPosition = "rta_position";
 inline constexpr auto rtaTarget = "rta_target";
 inline constexpr auto rtaView = "rta_view";
+inline constexpr auto rtaFloor = "rta_floor";
+inline constexpr auto rtaAfterGeq = "rack_rta_after_geq";
 inline constexpr auto compMode = "comp_mode";
 inline constexpr auto optoAttack = "comp_opto_attack";
 inline constexpr auto optoRelease = "comp_opto_release";
@@ -30,9 +36,10 @@ inline constexpr auto fetRelease = "comp_fet_release";
 
 inline juce::String id(const juce::String& prefix, const char* control) { return prefix + "_" + control; }
 inline juce::String band(int i) { return "band" + juce::String(i + 1); }
+inline juce::String geqGain(std::size_t i) { return "geq_band_" + juce::String(static_cast<int>(i + 1)); }
 inline juce::String stage(dsp::Stage stage)
 {
-    constexpr std::array prefixes { low, multi, comp, limit };
+    constexpr std::array prefixes { low, multi, comp, limit, geq };
     return prefixes[dsp::index(stage)];
 }
 } // namespace param
@@ -73,7 +80,6 @@ public:
     using TileOrder = std::array<std::size_t, dsp::stageCount + 1>;
     TileOrder tileOrder() const;
     void setTileOrder(const TileOrder&);
-    void setStripOrder(const dsp::Order&);
     int rtaPosition() const;
     void setRtaPosition(int position);
     std::optional<dsp::TonalReference> tonalReference() const;
@@ -81,7 +87,7 @@ public:
     juce::ValueTree presetState(PresetScope);
     juce::Result applyPreset(const juce::ValueTree&, PresetScope);
     unsigned presetRecallSafes() const { return recallSafes.load(std::memory_order_relaxed); }
-    void setPresetRecallSafes(unsigned mask) { recallSafes.store(mask & 127u, std::memory_order_relaxed); }
+    void setPresetRecallSafes(unsigned mask) { recallSafes.store(mask & ((1u << presetSafeCount) - 1u), std::memory_order_relaxed); }
     dsp::Metering readMeters() const;
     std::array<float, 2> readPeaks() const;
     bool isBypassed() const;
@@ -118,15 +124,20 @@ private:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
     DynamicsRefs dynamicsRefs(const juce::String& prefix, bool withMakeup = false);
+    int stripOrderIndex() const;
+    int rtaPositionForOrder(int orderIndex) const;
+    void setRoute(const dsp::Order&, int tap);
     void render(juce::AudioBuffer<float>&, bool hostBypass);
 
     DynamicsRefs lowRefs {}, compRefs {};
     std::array<BandRefs, dsp::bandCount> bandRefs {};
     Atomic *mode = nullptr, *order = nullptr, *bypass = nullptr, *multiOn = nullptr;
-    Atomic* rtaSlot = nullptr;
+    Atomic *rtaSlot = nullptr, *geqSlot = nullptr, *rtaAfterEq = nullptr;
     Atomic *compressorMode = nullptr, *optoAttack = nullptr, *optoRelease = nullptr;
     Atomic *fetAttack = nullptr, *fetRelease = nullptr;
     Atomic *limitOn = nullptr, *ceiling = nullptr, *drive = nullptr, *limitRelease = nullptr;
+    Atomic *geqOn = nullptr, *saturation = nullptr;
+    std::array<Atomic*, dsp::geqBandCount> geqGains {};
     dsp::Rack rack;
     std::array<StageMeter, dsp::stageCount> stageMeters {};
     std::array<Atomic, dsp::bandCount> bandMeter {};

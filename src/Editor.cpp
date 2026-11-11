@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "Editor.h"
+#include "BusColours.h"
 #include "PresetBrowser.h"
 #include "ShortBusFontData.h"
 
@@ -45,16 +46,17 @@ constexpr float transferReadoutWidth = 120.0f;
 constexpr float spectrumSideWidth = 29.0f;
 constexpr float bandRangeInset = 6.0f;
 constexpr float tonalTolerance = 4.0f;
-constexpr int presetDoorWidth = 220;
+constexpr int presetDoorWidth = 264;
+constexpr int geqControlsDepth = 57;
 const std::array<Colour, dsp::bandCount> bandColours {
     Colour(0xfff0bf58), Colour(0xff73d6b6), Colour(0xff79bbea),
     Colour(0xffb7a7f6), Colour(0xfff090ab)
 };
 constexpr std::array<const char*, dsp::stageCount + 1> stageNames {
-    "Expand / Lift", "5-Band", "Compressor", "Limiter", "RTA"
+    "Expand / Lift", "5-Band", "Compressor", "Limiter", "GEQ", "RTA"
 };
 constexpr std::array<const char*, dsp::stageCount> inspectorNames {
-    "Low-level dynamics", "5-band compressor", "Bus compressor", "Lookahead limiter"
+    "Low-level dynamics", "5-band compressor", "Bus compressor", "Lookahead limiter", "31-band graphic EQ"
 };
 
 struct Control { const char* id; const char* label; };
@@ -76,6 +78,13 @@ void style(TextButton& button, bool toggle = false)
 String signedDb(float db)
 {
     return (db > 0.05f ? "+" : "") + String(std::abs(db) < 0.05f ? 0.0f : db, 1) + " dB";
+}
+
+String eqFrequency(float hz)
+{
+    if (hz < 1000.0f)
+        return String(hz, std::floor(hz) < hz ? 1 : 0);
+    return String(hz / 1000.0f, 2).trimCharactersAtEnd("0").trimCharactersAtEnd(".") + "k";
 }
 
 String fontKey(const String& family)
@@ -277,6 +286,58 @@ Font Editor::BusLookAndFeel::getPopupMenuFont()
     return font(14.0f);
 }
 
+void Editor::BusLookAndFeel::drawLinearSlider(Graphics& g, int x, int y, int width, int height,
+                                             float position, float minimum, float maximum,
+                                             Slider::SliderStyle style, Slider& slider)
+{
+    if (style != Slider::LinearVertical)
+    {
+        LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, position, minimum, maximum, style, slider);
+        return;
+    }
+    const auto centre = static_cast<float>(x) + 0.5f * static_cast<float>(width);
+    const auto zero = static_cast<float>(y) + 0.5f * static_cast<float>(height);
+    const auto opacity = slider.isEnabled() ? 1.0f : 0.28f;
+    g.setColour(edge.withAlpha(opacity));
+    g.fillRoundedRectangle(centre - 1.0f, static_cast<float>(y), 2.0f, static_cast<float>(height), 1.0f);
+    g.setColour(body.withAlpha(opacity));
+    g.fillRect(centre - 1.0f, std::min(position, zero), 2.0f, std::abs(position - zero));
+    const auto capWidth = std::min(18.0f, static_cast<float>(width) - 2.0f);
+    const Rectangle<float> cap { centre - capWidth * 0.5f, position - 3.5f, capWidth, 7.0f };
+    g.setColour((slider.isMouseOverOrDragging() || slider.hasKeyboardFocus(false) ? yellow : white).withAlpha(opacity));
+    g.fillRoundedRectangle(cap, 1.7f);
+    g.setColour(ink.withAlpha(opacity));
+    g.fillRect(cap.reduced(2.0f, 3.0f));
+}
+
+void Editor::BusLookAndFeel::drawRotarySlider(Graphics& g, int x, int y, int width, int height,
+                                             float position, float startAngle, float endAngle, Slider& slider)
+{
+    const auto centre = Rectangle<int>(x, y, width, height).getCentre().toFloat();
+    const auto radius = 0.5f * static_cast<float>(std::min(width, height)) - 2.0f;
+    const auto angle = startAngle + position * (endAngle - startAngle);
+    Path scale;
+    scale.addCentredArc(centre.x, centre.y, radius, radius, 0.0f, startAngle, endAngle, true);
+    g.setColour(edge);
+    g.strokePath(scale, PathStrokeType(2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+    if (position > 0.0f)
+    {
+        Path value;
+        value.addCentredArc(centre.x, centre.y, radius, radius, 0.0f, startAngle, angle, true);
+        g.setColour(body);
+        g.strokePath(value, PathStrokeType(2.0f, PathStrokeType::curved, PathStrokeType::rounded));
+    }
+    const auto face = Rectangle<float>((radius - 3.0f) * 2.0f, (radius - 3.0f) * 2.0f).withCentre(centre);
+    const auto top = slider.isMouseOverOrDragging() ? bumperTop.brighter(0.22f) : bumperTop;
+    g.setGradientFill(ColourGradient(top, centre.x, face.getY(), bumperBottom, centre.x, face.getBottom(), false));
+    g.fillEllipse(face);
+    g.setColour(slider.hasKeyboardFocus(false) ? yellow : bumperEdge);
+    g.drawEllipse(face, 0.8f);
+    g.setColour(yellow);
+    g.drawLine({ centre.getPointOnCircumference(radius * 0.26f, angle),
+                 centre.getPointOnCircumference(radius - 4.5f, angle) }, 1.6f);
+}
+
 void Editor::StageButton::paintButton(Graphics& g, bool hovered, bool pressed)
 {
     const auto& skin = static_cast<const BusLookAndFeel&>(getLookAndFeel());
@@ -293,12 +354,14 @@ void Editor::StageButton::paintButton(Graphics& g, bool hovered, bool pressed)
     g.drawRoundedRectangle(pane, 2.5f, 1.0f);
 
     const auto area = getLocalBounds().reduced(7, 5);
-    label(g, skin.font(10.5f, true), "0" + String(position + 1), area.withWidth(20).withHeight(18),
-          chosen ? yellow : muted);
-    label(g, skin.font(12.5f, true), getName(), area.withTrimmedLeft(18).withHeight(18), white);
+    if (showPosition)
+        label(g, skin.font(10.5f, true), "0" + String(position + 1), area.withWidth(20).withHeight(18),
+              chosen ? yellow : muted);
+    label(g, skin.font(12.5f, true), getName(), area.withTrimmedLeft(showPosition ? 18 : 2).withHeight(18), white);
     g.setColour(enabled ? yellow : edge);
     g.fillEllipse(static_cast<float>(area.getX() + 3), static_cast<float>(area.getY() + 25), 5.0f, 5.0f);
-    const auto readout = dragging ? String("MOVE") : isAnalyzer ? String("MONITOR") : (enabled ? signedDb(gain) : String("OFF"));
+    const auto readout = dragging ? String("MOVE") : isAnalyzer ? String("MONITOR")
+        : !enabled ? String("OFF") : showsGain ? signedDb(gain) : String("ON");
     label(g, skin.font(11.0f), readout, area.withTrimmedLeft(18).withY(23).withHeight(20),
           enabled ? yellow : muted);
 }
@@ -373,7 +436,7 @@ void Editor::BypassButton::paintButton(Graphics& g, bool hovered, bool pressed)
 }
 
 Editor::Editor(Processor& owner)
-    : AudioProcessorEditor(owner), processor(owner), settings(owner.currentSettings())
+    : AudioProcessorEditor(owner), processor(owner), settings(owner.currentSettings()), order(owner.tileOrder())
 {
     setLookAndFeel(&theme);
     levels.fill(spectrumMinDb);
@@ -382,6 +445,7 @@ Editor::Editor(Processor& owner)
         auto& button = stages[i];
         button.setName(stageNames[i]);
         button.isAnalyzer = i == tonalTile;
+        button.showsGain = i != dsp::index(Stage::geq);
         button.enabled = button.isAnalyzer;
         button.setTriggeredOnMouseDown(true);
         button.setMouseCursor(MouseCursor::PointingHandCursor);
@@ -465,6 +529,49 @@ Editor::Editor(Processor& owner)
         addChildComponent(slider);
         addChildComponent(labels[i]);
     }
+    for (auto* dial : { &rtaSensitivity, &saturationDial })
+    {
+        dial->setSliderStyle(Slider::RotaryHorizontalVerticalDrag);
+        dial->setTextBoxStyle(Slider::TextBoxRight, false, 54, 22);
+        dial->setColour(Slider::rotarySliderFillColourId, body);
+        dial->setColour(Slider::thumbColourId, yellow);
+        dial->setColour(Slider::textBoxTextColourId, white);
+        dial->setColour(Slider::textBoxBackgroundColourId, graph);
+        dial->setColour(Slider::textBoxOutlineColourId, edge);
+        addChildComponent(*dial);
+    }
+    rtaSensitivity.setTitle("RTA sensitivity");
+    rtaSensitivity.setTextBoxStyle(Slider::TextBoxRight, false, 65, 22);
+    rtaSensitivity.setTooltip("Minimum RMS level at this tap. Raise the dBFS floor to hide idle noise.");
+    rtaSensitivity.setTextValueSuffix(" dBFS");
+    rtaSensitivity.setDoubleClickReturnValue(true, dsp::defaultRtaFloorDb);
+    sensitivityLink = std::make_unique<SliderLink>(processor.state, param::rtaFloor, rtaSensitivity);
+    saturationDial.setTitle("Saturation");
+    saturationDial.setTooltip("Soft clipping strength after the EQ filters.");
+    saturationDial.setTextValueSuffix(" %");
+    saturationDial.setDoubleClickReturnValue(true, 0.0);
+    saturationLink = std::make_unique<SliderLink>(processor.state, param::saturation, saturationDial);
+    for (std::size_t i = 0; i < geqFaders.size(); ++i)
+    {
+        auto& fader = geqFaders[i];
+        fader.setTitle(eqFrequency(dsp::geqFrequencies[i]) + " EQ gain");
+        fader.setSliderStyle(Slider::LinearVertical);
+        fader.setTextBoxStyle(Slider::NoTextBox, true, 0, 0);
+        fader.setTextValueSuffix(" dB");
+        fader.setDoubleClickReturnValue(true, 0.0);
+        fader.setPopupDisplayEnabled(true, true, this, 800);
+        fader.setScrollWheelEnabled(false);
+        addChildComponent(fader);
+        geqLinks[i] = std::make_unique<SliderLink>(processor.state, param::geqGain(i), fader);
+    }
+    style(flatEq);
+    flatEq.setTooltip("Return all 31 EQ bands to 0 dB.");
+    flatEq.onClick = [this]
+    {
+        for (auto& fader : geqFaders)
+            fader.setValue(0.0, sendNotificationSync);
+    };
+    addChildComponent(flatEq);
 
     setResizable(true, true);
     setResizeLimits(568, 494, 1040, 820);
@@ -500,7 +607,16 @@ void Editor::selectTile(std::size_t tile)
     applyOrder();
     bindControls();
     if (presetBrowser != nullptr)
-        presetBrowser->setScope(static_cast<PresetScope>(tile));
+        presetBrowser->setScope(presetScope());
+}
+
+PresetScope Editor::presetScope() const
+{
+    if (tonalSelected())
+        return PresetScope::rta;
+    if (geqSelected())
+        return PresetScope::geq;
+    return static_cast<PresetScope>(dsp::index(selected));
 }
 
 void Editor::bindControls()
@@ -513,8 +629,13 @@ void Editor::bindControls()
     const auto isMulti = !isTonal && selected == Stage::multiband;
     compressorModeBox.setVisible(!isTonal && selected == Stage::compressor);
     mode.setVisible(!isTonal && selected == Stage::lowLevel);
-    for (auto* control : std::array<Component*, 3> { &targetChoice, &tonalMode, &captureReference })
+    for (auto* control : std::array<Component*, 4> { &targetChoice, &tonalMode, &captureReference, &rtaSensitivity })
         control->setVisible(isTonal);
+    const auto isGeq = geqSelected();
+    saturationDial.setVisible(isGeq);
+    flatEq.setVisible(isGeq);
+    for (auto& fader : geqFaders)
+        fader.setVisible(isGeq);
     const auto stagePrefix = param::stage(selected);
     const auto bandPrefix = param::band(selectedBand);
     stageLink.reset();
@@ -536,7 +657,7 @@ void Editor::bindControls()
         sliders[i].setVisible(false);
         labels[i].setVisible(false);
     }
-    if (isTonal)
+    if (isTonal || isGeq)
     {
         resized();
         repaint();
@@ -711,7 +832,7 @@ void Editor::togglePresets()
             presetBrowser = std::make_unique<PresetBrowser>(processor);
             addAndMakeVisible(*presetBrowser);
         }
-        presetBrowser->setScope(static_cast<PresetScope>(selectedTile));
+        presetBrowser->setScope(presetScope());
         presetBrowser->setVisible(true);
         if (!presetDoorAllocated)
         {
@@ -765,11 +886,13 @@ void Editor::resized()
     bypass.setBounds(busBounds().getWidth() - 82, getHeight() - bumperDepth + 4, 56, 56);
     presetsButton.setBounds(busBounds().getWidth() - 171, getHeight() - bumperDepth + 14, 81, 36);
     auto strip = busBounds().reduced(frameInset, 0).withY(windowTop).withHeight(windowHeight);
+    const auto showPositions = strip.getWidth() >= static_cast<int>(tileCount) * 104;
     const auto& displayed = tileDrag && tileDrag->active ? tileDrag->preview : order;
     for (std::size_t i = 0; i < displayed.size(); ++i)
     {
         const auto slot = strip.removeFromLeft(strip.getWidth() / static_cast<int>(order.size() - i));
         stages[displayed[i]].position = static_cast<int>(i);
+        stages[displayed[i]].showPosition = showPositions;
         stages[displayed[i]].setBounds(slot.withTrimmedRight(i + 1 < order.size() ? 6 : 0));
     }
     if (presetBrowser != nullptr && presetDoorAllocated)
@@ -790,11 +913,12 @@ void Editor::resized()
 
     auto options = content.withY(optionTop).withHeight(22);
     auto tonalOptions = options.withTrimmedLeft(46);
-    targetChoice.setBounds(tonalOptions.removeFromLeft(128));
-    tonalOptions.removeFromLeft(8);
-    tonalMode.setBounds(tonalOptions.removeFromLeft(81));
-    tonalOptions.removeFromLeft(8);
-    captureReference.setBounds(tonalOptions.removeFromLeft(91));
+    targetChoice.setBounds(tonalOptions.removeFromLeft(118));
+    tonalOptions.removeFromLeft(6);
+    tonalMode.setBounds(tonalOptions.removeFromLeft(67));
+    tonalOptions.removeFromLeft(6);
+    captureReference.setBounds(tonalOptions.removeFromLeft(82));
+    rtaSensitivity.setBounds(tonalOptions.removeFromRight(94).withY(optionTop - 2).withHeight(26));
     mode.setBounds(options.withWidth(167));
     bandOn.setBounds(options.removeFromRight(72));
     for (auto& band : bands)
@@ -815,6 +939,19 @@ void Editor::resized()
     }
     auto modeArea = plot().withLeft(transferArea().getRight() + 8.0f + 3.0f * stageMeterWidth).toNearestInt().reduced(8, 9);
     compressorModeBox.setBounds(modeArea.removeFromBottom(24));
+    if (geqSelected())
+    {
+        auto bank = plot().toNearestInt().withTrimmedLeft(30).withTrimmedRight(8)
+            .withTrimmedTop(8).withTrimmedBottom(29);
+        for (std::size_t i = 0; i < geqFaders.size(); ++i)
+        {
+            const auto width = bank.getWidth() / static_cast<int>(geqFaders.size() - i);
+            geqFaders[i].setBounds(bank.removeFromLeft(width).reduced(1, 0));
+        }
+        const auto controlsArea = geqControls();
+        saturationDial.setBounds(controlsArea.withSizeKeepingCentre(166, 43).withTrimmedLeft(70));
+        flatEq.setBounds(controlsArea.withTrimmedLeft(controlsArea.getWidth() - 74).withSizeKeepingCentre(74, 24));
+    }
 }
 
 Rectangle<float> Editor::plot() const
@@ -822,9 +959,18 @@ Rectangle<float> Editor::plot() const
     if (tonalSelected())
         return busBounds().reduced(controlInset, 0).withTrimmedTop(optionTop + 27)
             .withTrimmedBottom(bumperDepth + 20).toFloat();
+    if (geqSelected())
+        return busBounds().reduced(controlInset, 0).withTrimmedTop(optionTop)
+            .withTrimmedBottom(bumperDepth + geqControlsDepth).toFloat();
     const auto top = selected == Stage::multiband || selected == Stage::lowLevel ? optionTop + 27 : optionTop;
     return busBounds().reduced(controlInset, 0).withTrimmedTop(top)
         .withTrimmedBottom(sliderRowsBottom + sliderRowHeight * 2 + 5).toFloat();
+}
+
+Rectangle<int> Editor::geqControls() const
+{
+    const auto bounds = plot().toNearestInt();
+    return bounds.withY(bounds.getBottom() + 5).withHeight(43);
 }
 
 Rectangle<float> Editor::transferArea() const
@@ -983,6 +1129,8 @@ void Editor::drawHeader(Graphics& g)
         label(g, theme.font(11.5f, true), source,
               { controlInset + 122, inspectorTop, earlier.getX() - controlInset - 170, 24 }, bandColours[1]);
         label(g, theme.font(10.5f, true), "TARGET", { controlInset, optionTop, 42, 22 }, muted);
+        label(g, theme.font(10.5f, true), "SENSITIVITY",
+              { rtaSensitivity.getX() - 67, optionTop, 63, 22 }, muted, Justification::centredRight);
     }
     else if (selected == Stage::multiband)
     {
@@ -1002,10 +1150,10 @@ void Editor::drawBumper(Graphics& g)
 {
     const auto top = getHeight() - bumperDepth;
     const auto bumper = Rectangle<int>(6, top, busBounds().getWidth() - 12, bumperDepth - 8).toFloat();
-    g.setGradientFill(ColourGradient(Colour(0xff373b3e), bumper.getX(), bumper.getY(),
-                                    Colour(0xff1b1d20), bumper.getX(), bumper.getBottom(), false));
+    g.setGradientFill(ColourGradient(bumperTop, bumper.getX(), bumper.getY(),
+                                    bumperBottom, bumper.getX(), bumper.getBottom(), false));
     g.fillRoundedRectangle(bumper, 7.0f);
-    g.setColour(Colour(0xff62666a));
+    g.setColour(bumperEdge);
     g.drawRoundedRectangle(bumper.reduced(0.5f), 6.5f, 1.0f);
     g.setColour(ink);
     g.drawHorizontalLine(top + 6, bumper.getX() + 9.0f, bumper.getRight() - 9.0f);
@@ -1037,9 +1185,44 @@ void Editor::paint(Graphics& g)
         drawTonalBalance(g, bounds);
     else if (selected == Stage::multiband)
         drawSpectrum(g, bounds);
+    else if (geqSelected())
+        drawGraphicEq(g);
     else
         drawTransfer(g, bounds);
     drawBumper(g);
+}
+
+void Editor::drawGraphicEq(Graphics& g)
+{
+    const auto bounds = plot();
+    const auto& first = geqFaders.front();
+    for (const auto db : { 12, 0, -12 })
+    {
+        const auto y = first.getY() + roundToInt(first.getPositionOfValue(db));
+        g.setColour(db == 0 ? edge : panel);
+        g.drawHorizontalLine(y, bounds.getX() + 29.0f, bounds.getRight() - 8.0f);
+        label(g, theme.font(9.5f, true), (db > 0 ? "+" : "") + String(db),
+              { roundToInt(bounds.getX()) + 4, y - 7, 21, 14 }, muted, Justification::centredRight);
+    }
+    for (std::size_t i = 0; i < geqFaders.size(); ++i)
+    {
+        const auto& fader = geqFaders[i];
+        const Point<float> centre { static_cast<float>(fader.getBounds().getCentreX()), bounds.getBottom() - 14.5f };
+        const Graphics::ScopedSaveState scope(g);
+        g.addTransform(AffineTransform::rotation(-MathConstants<float>::halfPi, centre.x, centre.y));
+        const auto text = Rectangle<float>(26.0f, 12.0f).withCentre(centre).toNearestInt();
+        label(g, theme.font(9.5f, true), eqFrequency(dsp::geqFrequencies[i]), text,
+              fader.isEnabled() ? muted : muted.withAlpha(0.42f), Justification::centred);
+    }
+    const auto& meter = meters.stages[dsp::index(Stage::geq)];
+    const auto readout = [](float amplitude)
+    {
+        return amplitude > 0.0f ? String(dsp::dbFromGain(amplitude), 1) : String("-inf");
+    };
+    label(g, theme.font(10.5f, true), "IN " + readout(meter.inputPeak) + "   OUT " + readout(meter.outputPeak),
+          geqControls().withWidth(144), muted);
+    label(g, theme.font(10.5f, true), "SATURATION",
+          saturationDial.getBounds().translated(-70, 0).withWidth(66), muted, Justification::centredRight);
 }
 
 void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
@@ -1435,6 +1618,13 @@ void Editor::updateTonalSpectrum()
     const auto now = Time::getMillisecondCounterHiRes();
     if (processor.readSpectrum(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize, key))
     {
+        if (!dsp::tonalAboveFloor(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize,
+                                 static_cast<float>(rtaSensitivity.getValue()), lastTonalFrame > 0.0))
+        {
+            lastTonalFrame = 0.0;
+            captureReference.setEnabled(false);
+            return;
+        }
         for (auto& channel : tonalBuffer)
         {
             tonalWindow.multiplyWithWindowingTable(channel.data(), Processor::tonalFftSize);
@@ -1444,7 +1634,7 @@ void Editor::updateTonalSpectrum()
         const auto power = dsp::tonalBandPower(tonalBuffer[0].data(), tonalBuffer[1].data(),
                                              Processor::tonalFftSize, processor.displayRate());
         const auto total = dsp::tonalEnergy(power);
-        if (std::isfinite(total) && total > 1.0e-9f)
+        if (std::isfinite(total) && total > 0.0f)
         {
             const auto retained = lastTonalFrame > 0.0
                 ? static_cast<float>(std::exp(-(now - lastTonalFrame) / 900.0)) : 0.0f;
@@ -1499,7 +1689,8 @@ void Editor::timerCallback()
         resized();
     meters = processor.readMeters();
     peaks = processor.readPeaks();
-    const std::array on { settings.lowLevel.enabled, settings.multiEnabled, settings.compressor.enabled, settings.limiter.enabled };
+    const std::array on { settings.lowLevel.enabled, settings.multiEnabled, settings.compressor.enabled,
+                          settings.limiter.enabled, settings.geq.enabled };
     for (std::size_t i = 0; i < on.size(); ++i)
     {
         stages[i].gain = meters.stages[i].gainDb;
@@ -1515,13 +1706,19 @@ void Editor::timerCallback()
         refreshBandControls();
         updateSpectrum();
     }
+    else if (geqSelected())
+    {
+        const auto nyquist = processor.displayRate() * 0.5f;
+        for (std::size_t i = 0; i < geqFaders.size(); ++i)
+            geqFaders[i].setEnabled(dsp::geqFrequencies[i] < nyquist);
+    }
     animateLights();
     repaint();
 }
 
 std::optional<Editor::GraphHit> Editor::graphHit(Point<float> position) const
 {
-    if (tonalSelected() || !plot().contains(position))
+    if (tonalSelected() || geqSelected() || !plot().contains(position))
         return {};
 
     if (selected != Stage::multiband)

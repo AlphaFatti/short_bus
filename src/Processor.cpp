@@ -28,6 +28,27 @@ void restoreMissingParameter(AudioProcessorValueTreeState& state, ValueTree& res
     restored.appendChild(defaultState, nullptr);
 }
 
+void restoreMissingPresetParameters(AudioProcessorValueTreeState& state, ValueTree& restored, PresetScope scope)
+{
+    if (scope == PresetScope::bus || scope == PresetScope::compressor)
+        for (const auto* id : compressorCharacterParameters)
+            restoreMissingParameter(state, restored, id);
+    if (scope == PresetScope::bus || scope == PresetScope::rta)
+        restoreMissingParameter(state, restored, param::rtaFloor);
+    if (scope == PresetScope::bus || scope == PresetScope::geq)
+    {
+        restoreMissingParameter(state, restored, param::geqEnabled);
+        restoreMissingParameter(state, restored, param::saturation);
+        for (std::size_t i = 0; i < dsp::geqBandCount; ++i)
+            restoreMissingParameter(state, restored, param::geqGain(i));
+    }
+    if (scope == PresetScope::bus)
+    {
+        restoreMissingParameter(state, restored, param::geqPosition);
+        restoreMissingParameter(state, restored, param::rtaAfterGeq);
+    }
+}
+
 void addFloat(Layout& layout, String id, String title, NormalisableRange<float> range, float initial)
 {
     layout.add(std::make_unique<AudioParameterFloat>(ParameterID { id, 1 }, title, range, initial));
@@ -92,9 +113,9 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
 {
     Layout layout;
     addToggle(layout, param::bypass, "Bypass", false);
-    constexpr std::array<const char*, dsp::stageCount> names { "Low Level", "5-Band", "Compressor", "Limiter" };
+    constexpr std::array<const char*, dsp::dynamicsStageCount> names { "Low Level", "5-Band", "Compressor", "Limiter" };
     StringArray orders;
-    for (const auto& order : dsp::orders)
+    for (const auto& order : dsp::dynamicsOrders)
     {
         StringArray stages;
         for (auto stage : order)
@@ -126,7 +147,7 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
     for (int i = 0; i < dsp::bandCount; ++i)
         addToggle(layout, param::id(param::band(i), param::bandLift), "Band " + String(i + 1) + " Upward Compression", false);
     layout.add(std::make_unique<AudioParameterInt>(ParameterID { param::rtaPosition, 1 }, "RTA Position",
-                                                   0, dsp::stageCount, dsp::stageCount));
+                                                   0, dsp::dynamicsStageCount, dsp::dynamicsStageCount));
     layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::rtaTarget, 1 }, "RTA Target",
         StringArray { "Balanced", "Bass-forward", "Speech", "Captured" }, 0));
     layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::rtaView, 1 }, "RTA View",
@@ -137,6 +158,18 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
     addFloat(layout, param::optoRelease, "Compressor Opto Release", { 20.0f, 500.0f, 1.0f, 0.5f }, dsp::optoTimingDefaults.release);
     addFloat(layout, param::fetAttack, "Compressor FET Attack", { 0.02f, 0.8f, 0.001f, 0.5f }, dsp::fetTimingDefaults.attack);
     addFloat(layout, param::fetRelease, "Compressor FET Release", { 50.0f, 1100.0f, 1.0f, 0.5f }, dsp::fetTimingDefaults.release);
+    addFloat(layout, param::rtaFloor, "RTA Sensitivity Floor", { -90.0f, -24.0f, 1.0f }, dsp::defaultRtaFloorDb);
+    addToggle(layout, param::geqEnabled, "GEQ Enabled", false);
+    for (std::size_t i = 0; i < dsp::geqBandCount; ++i)
+    {
+        const auto hz = dsp::geqFrequencies[i];
+        addFloat(layout, param::geqGain(i), "GEQ " + String(hz, std::floor(hz) < hz ? 1 : 0) + " Hz",
+                 { -dsp::geqRangeDb, dsp::geqRangeDb, 0.1f }, 0.0f);
+    }
+    addFloat(layout, param::saturation, "GEQ Saturation", { 0.0f, 100.0f, 1.0f }, 0.0f);
+    layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::geqPosition, 1 }, "GEQ Position",
+        StringArray { "Before limiter", "First", "Second", "Third", "Fourth", "Fifth" }, 0));
+    addToggle(layout, param::rtaAfterGeq, "RTA After GEQ At Shared Position", true);
     return layout;
 }
 
@@ -160,6 +193,8 @@ Processor::Processor()
     mode = state.getRawParameterValue(param::mode);
     order = state.getRawParameterValue(param::order);
     rtaSlot = state.getRawParameterValue(param::rtaPosition);
+    geqSlot = state.getRawParameterValue(param::geqPosition);
+    rtaAfterEq = state.getRawParameterValue(param::rtaAfterGeq);
     compressorMode = state.getRawParameterValue(param::compMode);
     optoAttack = state.getRawParameterValue(param::optoAttack);
     optoRelease = state.getRawParameterValue(param::optoRelease);
@@ -171,6 +206,10 @@ Processor::Processor()
     ceiling = state.getRawParameterValue(param::id(param::limit, "ceiling"));
     drive = state.getRawParameterValue(param::id(param::limit, "drive"));
     limitRelease = state.getRawParameterValue(param::id(param::limit, "release"));
+    geqOn = state.getRawParameterValue(param::geqEnabled);
+    saturation = state.getRawParameterValue(param::saturation);
+    for (std::size_t i = 0; i < geqGains.size(); ++i)
+        geqGains[i] = state.getRawParameterValue(param::geqGain(i));
 }
 
 Processor::DynamicsRefs Processor::dynamicsRefs(const String& prefix, bool withMakeup)
@@ -191,7 +230,7 @@ dsp::Settings Processor::currentSettings() const
 {
     dsp::Settings settings;
     settings.bypass = read(bypass) > 0.5f;
-    settings.order = std::clamp(roundToInt(read(order)), 0, dsp::orderCount - 1);
+    settings.order = stripOrderIndex();
     settings.lowMode = read(mode) < 0.5f ? dsp::LowMode::expand : dsp::LowMode::lift;
     settings.lowLevel = lowRefs.read();
     settings.compressor = compRefs.read();
@@ -205,14 +244,25 @@ dsp::Settings Processor::currentSettings() const
         settings.bands[i] = { read(refs.low), read(refs.high), refs.dynamics.read(), read(refs.lift) > 0.5f };
     }
     settings.limiter = { read(limitOn) > 0.5f, read(ceiling), read(drive), read(limitRelease) };
+    settings.geq.enabled = read(geqOn) > 0.5f;
+    settings.geq.saturation = read(saturation);
+    for (std::size_t i = 0; i < geqGains.size(); ++i)
+        settings.geq.gains[i] = read(geqGains[i]);
     return settings;
+}
+
+int Processor::stripOrderIndex() const
+{
+    const auto dynamics = std::clamp(roundToInt(read(order)), 0, dsp::dynamicsOrderCount - 1);
+    const auto geq = std::clamp(roundToInt(read(geqSlot)), 0, dsp::stageCount) - 1;
+    return dsp::rackOrderIndex(dynamics, geq);
 }
 
 Processor::TileOrder Processor::tileOrder() const
 {
-    const auto settings = currentSettings();
-    const auto& route = dsp::orders[static_cast<std::size_t>(settings.order)];
-    const auto tap = static_cast<std::size_t>(rtaPosition());
+    const auto orderIndex = stripOrderIndex();
+    const auto& route = dsp::orders[static_cast<std::size_t>(orderIndex)];
+    const auto tap = static_cast<std::size_t>(rtaPositionForOrder(orderIndex));
     TileOrder tiles {};
     auto stage = route.begin();
     for (std::size_t i = 0; i < tiles.size(); ++i)
@@ -237,11 +287,7 @@ void Processor::setTileOrder(const TileOrder& tiles)
         else
             *next++ = static_cast<dsp::Stage>(tiles[i]);
     }
-    const ScopedLock lock(presetLock);
-    settingsRevision.fetch_add(1, std::memory_order_acq_rel);
-    const ScopeGuard finished { [this] { settingsRevision.fetch_add(1, std::memory_order_release); } };
-    setStripOrder(route);
-    setRtaPosition(tap);
+    setRoute(route, tap);
 }
 
 ValueTree Processor::presetState(PresetScope scope)
@@ -273,22 +319,22 @@ Result Processor::applyPreset(const ValueTree& preset, PresetScope scope)
     if (!hasSettings)
         return Result::fail("The preset is empty.");
     auto complete = preset.createCopy();
-    if (scope == PresetScope::bus || scope == PresetScope::compressor)
-        for (const auto* id : compressorCharacterParameters)
-            restoreMissingParameter(state, complete, id);
+    restoreMissingPresetParameters(state, complete, scope);
     struct Change { RangedAudioParameter* parameter; float value; };
     std::vector<Change> changes;
     int recognized = 0;
     const auto safeMask = scope == PresetScope::bus ? presetRecallSafes() : 0u;
     const auto isSafe = [safeMask](const String& id)
     {
-        if (id == param::order || id == param::rtaPosition)
-            return (safeMask & (1u << 4)) != 0;
+        if (id == param::order || id == param::rtaPosition || id == param::geqPosition || id == param::rtaAfterGeq)
+            return (safeMask & orderRecallSafe) != 0;
         if (id.startsWith("rta_"))
-            return (safeMask & (1u << 5)) != 0;
+            return (safeMask & rtaRecallSafe) != 0;
         if (id == param::bypass)
-            return (safeMask & (1u << 6)) != 0;
-        for (int i = 0; i < dsp::stageCount; ++i)
+            return (safeMask & bypassRecallSafe) != 0;
+        if (presetIncludesParameter(PresetScope::geq, id))
+            return (safeMask & geqRecallSafe) != 0;
+        for (int i = 0; i < dsp::dynamicsStageCount; ++i)
             if (presetIncludesParameter(static_cast<PresetScope>(i), id))
                 return (safeMask & (1u << i)) != 0;
         return false;
@@ -324,27 +370,49 @@ Result Processor::applyPreset(const ValueTree& preset, PresetScope scope)
         change.parameter->setValueNotifyingHost(change.value);
         change.parameter->endChangeGesture();
     }
-    if ((scope == PresetScope::bus || scope == PresetScope::rta) && (safeMask & (1u << 5)) == 0)
+    if ((scope == PresetScope::bus || scope == PresetScope::rta) && (safeMask & rtaRecallSafe) == 0)
         setTonalReference(captured);
     return Result::ok();
 }
 
-void Processor::setStripOrder(const dsp::Order& requested)
+void Processor::setRoute(const dsp::Order& requested, int tap)
 {
     const auto position = std::find(dsp::orders.begin(), dsp::orders.end(), requested);
     if (position == dsp::orders.end())
         return;
-    setDiscreteValue(state, param::order, static_cast<int>(position - dsp::orders.begin()));
+    const auto orderIndex = static_cast<int>(position - dsp::orders.begin());
+    const auto eq = dsp::stagePosition(requested, dsp::Stage::geq);
+    const auto dynamicsTap = tap > eq ? tap - 1 : tap;
+    const ScopedLock lock(presetLock);
+    settingsRevision.fetch_add(1, std::memory_order_acq_rel);
+    const ScopeGuard finished { [this] { settingsRevision.fetch_add(1, std::memory_order_release); } };
+    if (stripOrderIndex() != orderIndex)
+    {
+        setDiscreteValue(state, param::order, orderIndex % dsp::dynamicsOrderCount);
+        setDiscreteValue(state, param::geqPosition, orderIndex < dsp::dynamicsOrderCount ? 0 : eq + 1);
+    }
+    setDiscreteValue(state, param::rtaPosition, dynamicsTap);
+    if (dynamicsTap == eq)
+        setDiscreteValue(state, param::rtaAfterGeq, tap > eq ? 1 : 0);
 }
 
 int Processor::rtaPosition() const
 {
-    return std::clamp(roundToInt(read(rtaSlot)), 0, dsp::stageCount);
+    return rtaPositionForOrder(stripOrderIndex());
+}
+
+int Processor::rtaPositionForOrder(int orderIndex) const
+{
+    // The original RTA parameter counts dynamics stages. The tie flag locates the tap on either side of the GEQ.
+    const auto dynamicsTap = std::clamp(roundToInt(read(rtaSlot)), 0, dsp::dynamicsStageCount);
+    const auto eq = dsp::stagePosition(dsp::orders[static_cast<std::size_t>(orderIndex)], dsp::Stage::geq);
+    const auto afterEq = dynamicsTap > eq || (dynamicsTap == eq && read(rtaAfterEq) > 0.5f);
+    return afterEq ? dynamicsTap + 1 : dynamicsTap;
 }
 
 void Processor::setRtaPosition(int position)
 {
-    setDiscreteValue(state, param::rtaPosition, position);
+    setRoute(dsp::orders[static_cast<std::size_t>(stripOrderIndex())], std::clamp(position, 0, dsp::stageCount));
 }
 
 std::optional<dsp::TonalReference> Processor::tonalReference() const
@@ -370,7 +438,7 @@ void Processor::prepareToPlay(double rate, int)
 {
     rack.prepare(rate);
     renderSettings = currentSettings();
-    renderRtaPosition = rtaPosition();
+    renderRtaPosition = rtaPositionForOrder(renderSettings.order);
     setLatencySamples(rack.latency());
     meterRate.store(static_cast<float>(rate), std::memory_order_relaxed);
     spectrumEpoch.fetch_add(1, std::memory_order_relaxed);
@@ -415,7 +483,7 @@ void Processor::render(AudioBuffer<float>& audio, bool hostBypass)
     if ((revision & 1u) == 0)
     {
         const auto candidate = currentSettings();
-        const auto position = rtaPosition();
+        const auto position = rtaPositionForOrder(candidate.order);
         if (settingsRevision.load(std::memory_order_acquire) == revision)
         {
             renderSettings = candidate;
@@ -507,7 +575,8 @@ std::uint32_t Processor::spectrumKey(SpectrumView view, int orderIndex, int posi
 {
     const auto source = view == SpectrumView::tonal
         ? 2 + 2 * (orderIndex * (dsp::stageCount + 1) + position) + static_cast<int>(bypassed) : 1;
-    return spectrumEpoch.load(std::memory_order_relaxed) * 256u + static_cast<std::uint32_t>(source);
+    constexpr auto keysPerEpoch = 2u + 2u * dsp::orderCount * (dsp::stageCount + 1u);
+    return spectrumEpoch.load(std::memory_order_relaxed) * keysPerEpoch + static_cast<std::uint32_t>(source);
 }
 
 bool Processor::readSpectrum(float* left, float* right, int count, std::uint32_t key)
@@ -577,8 +646,7 @@ void Processor::setStateInformation(const void* data, int size)
                 restoreMissingParameter(state, restored, param::id(param::band(i), param::bandLift));
             for (const auto* id : { param::rtaPosition, param::rtaTarget, param::rtaView })
                 restoreMissingParameter(state, restored, id);
-            for (const auto* id : compressorCharacterParameters)
-                restoreMissingParameter(state, restored, id);
+            restoreMissingPresetParameters(state, restored, PresetScope::bus);
             setTonalReference(readReference(restored));
             state.replaceState(restored);
         }
