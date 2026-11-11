@@ -155,12 +155,12 @@ private:
     juce::TextButton stageOn { "Stage on" }, bandOn { "Band on" };
     juce::TextButton earlier { "<" }, later { ">" };
     juce::TextButton captureReference { "Capture" };
-    juce::ComboBox mode, targetChoice, tonalMode;
+    juce::ComboBox mode, targetChoice, tonalMode, compressorModeBox;
     std::array<juce::Slider, controlCount> sliders;
     std::array<juce::Label, controlCount> labels;
     std::array<std::unique_ptr<SliderLink>, controlCount> sliderLinks;
     std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink;
-    std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink;
+    std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink, compressorModeLink;
     std::optional<GraphDrag> graphDrag;
     std::optional<TileDrag> tileDrag;
     PresetButton presetsButton;

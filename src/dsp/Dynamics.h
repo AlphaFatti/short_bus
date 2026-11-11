@@ -80,6 +80,7 @@ public:
     }
 
     float meter() const { return envelope.current(); }
+    float makeupDb() const { return makeup; }
 
 private:
     GainEnvelope envelope;

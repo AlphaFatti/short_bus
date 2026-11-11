@@ -222,15 +222,14 @@ void PresetBrowser::resized()
 
 void PresetBrowser::paint(Graphics& g)
 {
-    g.setColour(Colour(0xff171715));
-    g.fillRoundedRectangle(getLocalBounds().toFloat().reduced(2.0f), 4.0f);
+    const auto frame = getLocalBounds().toFloat().reduced(1.0f);
+    g.setGradientFill(ColourGradient(Colour(0xff707e85), frame.getX(), frame.getY(),
+                                    Colour(0xff414d54), frame.getRight(), frame.getBottom(), false));
+    g.fillRoundedRectangle(frame, 4.0f);
     g.setColour(Colour(0xffe8a317));
-    g.fillRect(0, 0, 5, getHeight());
-    for (int i = 1; i <= 4; ++i)
-    {
-        g.setColour(Colour(0xff414649));
-        g.fillRoundedRectangle(0.0f, static_cast<float>(i * getHeight() / 5 - 9), 9.0f, 18.0f, 2.0f);
-    }
+    g.drawRoundedRectangle(frame, 4.0f, 2.0f);
+    g.setColour(Colour(0xff20272b));
+    g.fillRoundedRectangle(frame.reduced(5.0f), 2.0f);
 }
 
 void PresetBrowser::visibilityChanged()

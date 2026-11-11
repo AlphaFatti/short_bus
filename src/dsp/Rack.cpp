@@ -94,7 +94,7 @@ void Rack::Chain::configure(const Settings& settings)
     stageMeters = {};
     lowLevel.configure(sampleRate, settings.lowLevel,
         settings.lowMode == LowMode::expand ? Curve::expand : Curve::lift);
-    compressor.configure(sampleRate, settings.compressor, Curve::compress);
+    compressor.configure(sampleRate, settings.compressor, settings.compressorMode, settings.optoTiming, settings.fetTiming);
     const auto spans = orderedBandSpans(settings.bands, sampleRate);
     for (std::size_t i = 0; i < bands.size(); ++i)
     {

@@ -13,6 +13,11 @@ using Frame = std::array<float, 2>;
 
 enum class Stage : std::uint8_t { lowLevel, multiband, compressor, limiter };
 enum class LowMode : std::uint8_t { expand, lift };
+enum class CompressorMode : std::uint8_t { clean, opto, fet };
+
+struct CompressorTiming { float attack; float release; };
+constexpr CompressorTiming optoTimingDefaults { 10.0f, 60.0f };
+constexpr CompressorTiming fetTimingDefaults { 0.2f, 150.0f };
 
 constexpr int stageCount = 4;
 constexpr int bandCount = 5;
@@ -115,6 +120,9 @@ struct Settings
     bool multiEnabled = false;
     std::array<BandSettings, bandCount> bands = bandDefaults;
     DynamicsSettings compressor = compDefaults;
+    CompressorMode compressorMode = CompressorMode::clean;
+    CompressorTiming optoTiming = optoTimingDefaults;
+    CompressorTiming fetTiming = fetTimingDefaults;
     LimiterSettings limiter;
     bool bypass = false;
     int order = 0;

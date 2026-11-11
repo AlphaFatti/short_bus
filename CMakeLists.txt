@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(ShortBus VERSION 0.1.8 LANGUAGES C CXX)
+project(ShortBus VERSION 0.1.9 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,9 @@ if(BUILD_TESTING)
     add_executable(short_bus_dsp_tests tests/DspTests.cpp)
     target_link_libraries(short_bus_dsp_tests PRIVATE short_bus_dsp)
     add_test(NAME short_bus_dsp_tests COMMAND short_bus_dsp_tests)
+    add_executable(short_bus_compressor_tests tests/CompressorTests.cpp)
+    target_link_libraries(short_bus_compressor_tests PRIVATE short_bus_dsp)
+    add_test(NAME short_bus_compressor_tests COMMAND short_bus_compressor_tests)
 endif()
 
 if(SHORT_BUS_BUILD_PLUGIN)

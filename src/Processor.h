@@ -22,6 +22,11 @@ inline constexpr auto bandLift = "lift";
 inline constexpr auto rtaPosition = "rta_position";
 inline constexpr auto rtaTarget = "rta_target";
 inline constexpr auto rtaView = "rta_view";
+inline constexpr auto compMode = "comp_mode";
+inline constexpr auto optoAttack = "comp_opto_attack";
+inline constexpr auto optoRelease = "comp_opto_release";
+inline constexpr auto fetAttack = "comp_fet_attack";
+inline constexpr auto fetRelease = "comp_fet_release";
 
 inline juce::String id(const juce::String& prefix, const char* control) { return prefix + "_" + control; }
 inline juce::String band(int i) { return "band" + juce::String(i + 1); }
@@ -119,6 +124,8 @@ private:
     std::array<BandRefs, dsp::bandCount> bandRefs {};
     Atomic *mode = nullptr, *order = nullptr, *bypass = nullptr, *multiOn = nullptr;
     Atomic* rtaSlot = nullptr;
+    Atomic *compressorMode = nullptr, *optoAttack = nullptr, *optoRelease = nullptr;
+    Atomic *fetAttack = nullptr, *fetRelease = nullptr;
     Atomic *limitOn = nullptr, *ceiling = nullptr, *drive = nullptr, *limitRelease = nullptr;
     dsp::Rack rack;
     std::array<StageMeter, dsp::stageCount> stageMeters {};
