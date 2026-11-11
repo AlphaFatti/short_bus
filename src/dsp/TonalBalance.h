@@ -45,28 +45,56 @@ inline int tonalBandsAtRate(float rate)
     return static_cast<int>(boundary - tonalEdges.begin()) - 1;
 }
 
+inline float spectrumBandPower(const float* left, const float* right, int fftSize, float low, float high)
+{
+    const auto fftScale = 1.0f / static_cast<float>(fftSize);
+    const auto first = std::max(1, static_cast<int>(std::ceil(low - 0.5f)));
+    const auto last = std::min(fftSize / 2, static_cast<int>(std::floor(high + 0.5f)));
+    auto power = 0.0f;
+    for (auto bin = first; bin <= last; ++bin)
+    {
+        const auto center = static_cast<float>(bin);
+        const auto overlap = std::min(high, center + 0.5f) - std::max(low, center - 0.5f);
+        const auto l = left[bin] * fftScale;
+        const auto r = right[bin] * fftScale;
+        power += 0.5f * overlap * (l * l + r * r);
+    }
+    return power;
+}
+
 inline TonalCurve tonalBandPower(const float* left, const float* right, int fftSize, float rate)
 {
     TonalCurve power {};
     const auto binWidth = rate / static_cast<float>(fftSize);
-    const auto fftScale = 1.0f / static_cast<float>(fftSize);
     const auto count = tonalBandsAtRate(rate);
     for (int band = 0; band < count; ++band)
     {
         const auto i = static_cast<std::size_t>(band);
         const auto low = tonalEdges[i] / binWidth;
         const auto high = tonalEdges[i + 1] / binWidth;
-        const auto first = std::max(1, static_cast<int>(std::ceil(low - 0.5f)));
-        const auto last = std::min(fftSize / 2, static_cast<int>(std::floor(high + 0.5f)));
-        for (auto bin = first; bin <= last; ++bin)
-        {
-            const auto center = static_cast<float>(bin);
-            const auto overlap = std::min(high, center + 0.5f) - std::max(low, center - 0.5f);
-            const auto l = left[bin] * fftScale;
-            const auto r = right[bin] * fftScale;
-            power[i] += 0.5f * overlap * (l * l + r * r);
-        }
+        power[i] = spectrumBandPower(left, right, fftSize, low, high);
     }
+    return power;
+}
+
+inline const auto geqSpectrumEdges = []
+{
+    std::array<float, geqBandCount + 1> edges {};
+    for (std::size_t i = 1; i < geqBandCount; ++i)
+        edges[i] = std::sqrt(geqFrequencies[i - 1] * geqFrequencies[i]);
+    edges.front() = geqFrequencies.front() * geqFrequencies.front() / edges[1];
+    edges.back() = geqFrequencies.back() * geqFrequencies.back() / edges[geqBandCount - 1];
+    return edges;
+}();
+
+inline std::array<float, geqBandCount> geqBandPower(const float* left, const float* right, int fftSize, float rate)
+{
+    std::array<float, geqBandCount> power {};
+    const auto binWidth = rate / static_cast<float>(fftSize);
+    const auto nyquist = rate * 0.5f;
+    for (std::size_t i = 0; i < power.size() && geqFrequencies[i] < nyquist; ++i)
+        power[i] = spectrumBandPower(left, right, fftSize, geqSpectrumEdges[i] / binWidth,
+                                     std::min(nyquist, geqSpectrumEdges[i + 1]) / binWidth);
     return power;
 }
 

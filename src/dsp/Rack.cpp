@@ -228,4 +228,12 @@ Metering Rack::meters() const
     return chains[static_cast<std::size_t>(active)].meters();
 }
 
+Metering Rack::takeMeters()
+{
+    const auto result = meters();
+    for (auto& chain : chains)
+        chain.stageMeters = {};
+    return result;
+}
+
 } // namespace shortbus::dsp

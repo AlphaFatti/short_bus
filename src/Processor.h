@@ -47,11 +47,21 @@ inline juce::String stage(dsp::Stage stage)
 class Processor final : public juce::AudioProcessor
 {
 public:
-    enum class SpectrumView { none, output, tonal };
+    enum class SpectrumView { none, output, tonal, geq };
     static constexpr int fftOrder = 11;
     static constexpr int fftSize = 1 << fftOrder;
     static constexpr int tonalFftOrder = 14;
     static constexpr int tonalFftSize = 1 << tonalFftOrder;
+    static constexpr int historyHz = 50;
+    static constexpr int historySeconds = 4;
+    static constexpr int historyLength = historyHz * historySeconds;
+
+    struct HistoryFrame
+    {
+        dsp::Metering levels;
+        float tapPeak = 0.0f;
+        std::uint32_t tapKey = 0, epoch = 0, sequence = 0;
+    };
 
     Processor();
     using AudioProcessor::processBlock;
@@ -89,6 +99,8 @@ public:
     unsigned presetRecallSafes() const { return recallSafes.load(std::memory_order_relaxed); }
     void setPresetRecallSafes(unsigned mask) { recallSafes.store(mask & ((1u << presetSafeCount) - 1u), std::memory_order_relaxed); }
     dsp::Metering readMeters() const;
+    void setMeterHistoryActive(bool active);
+    int readMeterHistory(HistoryFrame* destination, int capacity);
     std::array<float, 2> readPeaks() const;
     bool isBypassed() const;
     bool consumeOutputPeakEvent() { return outputPeakPending.exchange(false, std::memory_order_relaxed); }
@@ -128,6 +140,8 @@ private:
     int rtaPositionForOrder(int orderIndex) const;
     void setRoute(const dsp::Order&, int tap);
     void render(juce::AudioBuffer<float>&, bool hostBypass);
+    void accumulateHistory(dsp::Metering, const dsp::Order&, int tap, bool bypassed, std::uint32_t tapKey);
+    void publishHistory();
 
     DynamicsRefs lowRefs {}, compRefs {};
     std::array<BandRefs, dsp::bandCount> bandRefs {};
@@ -141,11 +155,17 @@ private:
     dsp::Rack rack;
     std::array<StageMeter, dsp::stageCount> stageMeters {};
     std::array<Atomic, dsp::bandCount> bandMeter {};
+    std::atomic<bool> historyRequested { false };
+    juce::AbstractFifo historyFifo { historyLength * 2 };
+    std::array<HistoryFrame, historyLength * 2> historyQueue {};
+    HistoryFrame historyWindow;
+    int historyWindowSamples = 960, historySamples = 0;
+    std::uint32_t historySequence = 0;
     Atomic inputPeak {}, outputPeak {}, meterRate { 48000.0f };
     std::atomic<bool> hostBypassed { false }, outputPeakPending { false };
     juce::AbstractFifo spectrumFifo { tonalFftSize * 2 };
     std::array<SpectrumSample, tonalFftSize * 2> spectrum {};
-    std::atomic<std::uint32_t> spectrumEpoch { 0 };
+    std::atomic<std::uint32_t> analysisEpoch { 0 };
     std::uint32_t spectrumSequence = 0;
     mutable juce::CriticalSection referenceLock;
     std::optional<dsp::TonalReference> reference;

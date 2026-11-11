@@ -338,6 +338,18 @@ void tonalBalance()
           "idle noise closes an active analyzer");
     check(tonalAboveFloor(left.data(), right.data(), samples, -85.0f, false),
           "lowering the floor shows quiet stereo audio without phase cancellation");
+
+    left.fill(0.0f);
+    right.fill(0.0f);
+    left[341] = 4096.0f;
+    right[341] = 4096.0f;
+    const auto eqPower = geqBandPower(left.data(), right.data(), fftSize, rate);
+    check(eqPower[17] > 0.06f && eqPower[16] < 1.0e-9f && eqPower[18] < 1.0e-9f,
+          "GEQ RTA places a 1 kHz signal under the 1 kHz fader");
+    left[8192] = 4096.0f;
+    right[8192] = 4096.0f;
+    check(geqBandPower(left.data(), right.data(), fftSize, 32000.0f).back() < 1.0e-9f,
+          "GEQ RTA skips bands above Nyquist");
 }
 
 void graphicEq()

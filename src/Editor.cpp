@@ -46,8 +46,13 @@ constexpr float transferReadoutWidth = 120.0f;
 constexpr float spectrumSideWidth = 29.0f;
 constexpr float bandRangeInset = 6.0f;
 constexpr float tonalTolerance = 4.0f;
-constexpr int presetDoorWidth = 264;
+constexpr int presetDoorWidth = 210;
 constexpr int geqControlsDepth = 57;
+constexpr int historyHeight = 58;
+constexpr int historyGap = 6;
+constexpr int historySpace = historyHeight + historyGap;
+constexpr int minimumBusHeight = 494 + historySpace;
+constexpr float geqRtaMinDb = -72.0f;
 const std::array<Colour, dsp::bandCount> bandColours {
     Colour(0xfff0bf58), Colour(0xff73d6b6), Colour(0xff79bbea),
     Colour(0xffb7a7f6), Colour(0xfff090ab)
@@ -574,9 +579,10 @@ Editor::Editor(Processor& owner)
     addChildComponent(flatEq);
 
     setResizable(true, true);
-    setResizeLimits(568, 494, 1040, 820);
-    setSize(636, 548);
+    setResizeLimits(568, minimumBusHeight, 1040, 820);
+    setSize(636, 548 + historySpace);
     selectTile(dsp::index(Stage::lowLevel));
+    processor.setMeterHistoryActive(true);
     processor.consumeOutputPeakEvent();
     startTimerHz(24);
 }
@@ -585,6 +591,7 @@ Editor::~Editor()
 {
     stopTimer();
     processor.spectrumRequested.store(Processor::SpectrumView::none, std::memory_order_relaxed);
+    processor.setMeterHistoryActive(false);
     finishGraphDrag();
     setLookAndFeel(nullptr);
 }
@@ -597,11 +604,15 @@ void Editor::selectTile(std::size_t tile)
     for (std::size_t i = 0; i < stages.size(); ++i)
         stages[i].setToggleState(i == selectedTile, dontSendNotification);
     const auto spectrum = tonalSelected() ? Processor::SpectrumView::tonal
-        : selected == Stage::multiband ? Processor::SpectrumView::output : Processor::SpectrumView::none;
+        : selected == Stage::multiband ? Processor::SpectrumView::output
+        : geqSelected() ? Processor::SpectrumView::geq : Processor::SpectrumView::none;
     processor.discardSpectrum();
     processor.spectrumRequested.store(spectrum, std::memory_order_relaxed);
     tonalKey = 0;
     lastTonalFrame = 0.0;
+    geqSpectrumKey = 0;
+    lastGeqFrame = 0.0;
+    geqSpectrum.fill(geqRtaMinDb);
     captureReference.setEnabled(false);
     levels.fill(spectrumMinDb);
     applyOrder();
@@ -838,7 +849,7 @@ void Editor::togglePresets()
         {
             const auto closedWidth = getWidth();
             presetDoorAllocated = true;
-            setResizeLimits(568 + presetDoorWidth, 494, 1040 + presetDoorWidth, 820);
+            setResizeLimits(568 + presetDoorWidth, minimumBusHeight, 1040 + presetDoorWidth, 820);
             setSize(closedWidth + presetDoorWidth, getHeight());
         }
     }
@@ -857,7 +868,7 @@ void Editor::animatePresetDoor(double elapsedMs)
         const auto openWidth = getWidth();
         presetBrowser->setVisible(false);
         presetDoorAllocated = false;
-        setResizeLimits(568, 494, 1040, 820);
+        setResizeLimits(568, minimumBusHeight, 1040, 820);
         setSize(openWidth - presetDoorWidth, getHeight());
     }
     resized();
@@ -941,7 +952,7 @@ void Editor::resized()
     compressorModeBox.setBounds(modeArea.removeFromBottom(24));
     if (geqSelected())
     {
-        auto bank = plot().toNearestInt().withTrimmedLeft(30).withTrimmedRight(8)
+        auto bank = plot().toNearestInt().withTrimmedLeft(30).withTrimmedRight(28)
             .withTrimmedTop(8).withTrimmedBottom(29);
         for (std::size_t i = 0; i < geqFaders.size(); ++i)
         {
@@ -958,18 +969,24 @@ Rectangle<float> Editor::plot() const
 {
     if (tonalSelected())
         return busBounds().reduced(controlInset, 0).withTrimmedTop(optionTop + 27)
-            .withTrimmedBottom(bumperDepth + 20).toFloat();
+            .withTrimmedBottom(bumperDepth + 20 + historySpace).toFloat();
     if (geqSelected())
         return busBounds().reduced(controlInset, 0).withTrimmedTop(optionTop)
-            .withTrimmedBottom(bumperDepth + geqControlsDepth).toFloat();
+            .withTrimmedBottom(bumperDepth + geqControlsDepth + historySpace).toFloat();
     const auto top = selected == Stage::multiband || selected == Stage::lowLevel ? optionTop + 27 : optionTop;
     return busBounds().reduced(controlInset, 0).withTrimmedTop(top)
-        .withTrimmedBottom(sliderRowsBottom + sliderRowHeight * 2 + 5).toFloat();
+        .withTrimmedBottom(sliderRowsBottom + sliderRowHeight * 2 + 5 + historySpace).toFloat();
+}
+
+Rectangle<float> Editor::historyBounds() const
+{
+    const auto bounds = plot();
+    return bounds.withY(bounds.getBottom() + historyGap).withHeight(historyHeight);
 }
 
 Rectangle<int> Editor::geqControls() const
 {
-    const auto bounds = plot().toNearestInt();
+    const auto bounds = historyBounds().toNearestInt();
     return bounds.withY(bounds.getBottom() + 5).withHeight(43);
 }
 
@@ -1144,6 +1161,11 @@ void Editor::drawHeader(Graphics& g)
         const auto* hint = width >= 160 ? "Click band  /  Drag range bar" : "Click band to select";
         label(g, theme.font(10.5f), hint, { x, optionTop, width, 22 }, muted);
     }
+    else if (geqSelected())
+    {
+        label(g, theme.font(10.0f, true), "RTA  POST EQ", { stageOn.getX() - 96, inspectorTop, 87, 24 },
+              bandColours[2], Justification::centredRight);
+    }
 }
 
 void Editor::drawBumper(Graphics& g)
@@ -1189,6 +1211,7 @@ void Editor::paint(Graphics& g)
         drawGraphicEq(g);
     else
         drawTransfer(g, bounds);
+    drawMeterHistory(g);
     drawBumper(g);
 }
 
@@ -1196,13 +1219,33 @@ void Editor::drawGraphicEq(Graphics& g)
 {
     const auto bounds = plot();
     const auto& first = geqFaders.front();
+    const auto bankTop = static_cast<float>(first.getY()) + first.getPositionOfValue(dsp::geqRangeDb);
+    const auto bankBottom = static_cast<float>(first.getY()) + first.getPositionOfValue(-dsp::geqRangeDb);
+    const auto bank = bounds.withTop(bankTop).withBottom(bankBottom);
+    for (std::size_t i = 0; i < geqFaders.size(); ++i)
+    {
+        const auto& fader = geqFaders[i];
+        const auto top = levelToY(bank, geqSpectrum[i], geqRtaMinDb, 0.0f);
+        if (!fader.isEnabled() || top >= bankBottom)
+            continue;
+        const auto bar = fader.getBounds().toFloat().withTop(top).withBottom(bankBottom);
+        g.setColour(bandColours[2].withAlpha(0.27f));
+        g.fillRect(bar);
+        g.setColour(bandColours[2].withAlpha(0.72f));
+        g.fillRect(bar.withHeight(1.2f));
+    }
     for (const auto db : { 12, 0, -12 })
     {
         const auto y = first.getY() + roundToInt(first.getPositionOfValue(db));
         g.setColour(db == 0 ? edge : panel);
-        g.drawHorizontalLine(y, bounds.getX() + 29.0f, bounds.getRight() - 8.0f);
+        g.drawHorizontalLine(y, bounds.getX() + 29.0f, bounds.getRight() - 28.0f);
         label(g, theme.font(9.5f, true), (db > 0 ? "+" : "") + String(db),
               { roundToInt(bounds.getX()) + 4, y - 7, 21, 14 }, muted, Justification::centredRight);
+    }
+    for (const auto db : { 0, -36, -72 })
+    {
+        const auto y = roundToInt(levelToY(bank, static_cast<float>(db), geqRtaMinDb, 0.0f));
+        label(g, theme.font(9.5f), String(db), { roundToInt(bounds.getRight()) - 24, y - 7, 20, 14 }, bandColours[2]);
     }
     for (std::size_t i = 0; i < geqFaders.size(); ++i)
     {
@@ -1223,6 +1266,105 @@ void Editor::drawGraphicEq(Graphics& g)
           geqControls().withWidth(144), muted);
     label(g, theme.font(10.5f, true), "SATURATION",
           saturationDial.getBounds().translated(-70, 0).withWidth(66), muted, Justification::centredRight);
+}
+
+void Editor::drawMeterHistory(Graphics& g)
+{
+    const auto bounds = historyBounds();
+    g.setColour(graph);
+    g.fillRoundedRectangle(bounds, 5.0f);
+    g.setColour(edge);
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 5.0f, 1.0f);
+
+    const auto tapView = tonalSelected();
+    const auto bandView = !tapView && selected == Stage::multiband;
+    const auto showGain = !tapView && !geqSelected();
+    const auto band = static_cast<std::size_t>(selectedBand);
+    const auto gainColour = red;
+    const auto levelColour = bandColours[2];
+    const auto outputColour = bandColours[1];
+    const auto legendFont = theme.font(9.5f, true);
+    auto legend = bounds.toNearestInt().reduced(8, 0).withHeight(14);
+    label(g, legendFont, tapView ? "TAP dBFS" : "IN dBFS", legend.removeFromLeft(58), levelColour);
+    if (!tapView)
+        label(g, legendFont, "OUT dBFS", legend.removeFromLeft(68), outputColour);
+    if (showGain)
+        label(g, legendFont, bandView ? "BAND " + String(selectedBand + 1) + " GAIN dB" : "GAIN dB", legend, gainColour);
+
+    const auto area = bounds.reduced(27.0f, 0.0f).withTrimmedTop(15.0f).withTrimmedBottom(13.0f);
+    for (int second = 0; second <= Processor::historySeconds; ++second)
+    {
+        const auto x = area.getRight() - area.getWidth() * static_cast<float>(second) / Processor::historySeconds;
+        g.setColour(panel);
+        g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
+        const auto time = second == 0 ? String("NOW") : "-" + String(second) + " s";
+        label(g, theme.font(9.0f), time, { roundToInt(x) - 18, roundToInt(area.getBottom()), 36, 12 },
+              muted, Justification::centred);
+    }
+    g.setColour(panel);
+    g.drawHorizontalLine(roundToInt(area.getCentreY()), area.getX(), area.getRight());
+    const auto scaleLabel = [&](const String& text, float y, bool right, Colour colour)
+    {
+        const auto x = right ? roundToInt(area.getRight()) + 4 : roundToInt(bounds.getX()) + 3;
+        label(g, theme.font(8.5f), text, { x, roundToInt(y) - 5, 20, 10 }, colour,
+              right ? Justification::centredLeft : Justification::centredRight);
+    };
+    scaleLabel("0", area.getY(), false, levelColour);
+    scaleLabel("-60", area.getBottom(), false, levelColour);
+    if (showGain)
+    {
+        scaleLabel("+24", area.getY(), true, gainColour);
+        scaleLabel("0", area.getCentreY(), true, gainColour);
+        scaleLabel("-24", area.getBottom(), true, gainColour);
+    }
+
+    int firstFrame = 0;
+    if (tapView)
+    {
+        firstFrame = historyCount;
+        const auto key = currentTonalKey();
+        while (firstFrame > 0 && historyAt(firstFrame - 1).tapKey == key)
+            --firstFrame;
+    }
+    if (firstFrame >= historyCount)
+        return;
+    const auto xAt = [&](int i)
+    {
+        return area.getRight() - area.getWidth() * static_cast<float>(historyCount - 1 - i)
+            / static_cast<float>(Processor::historyLength - 1);
+    };
+    Path input, output, gain;
+    for (int i = firstFrame; i < historyCount; ++i)
+    {
+        const auto& frame = historyAt(i);
+        const auto& stage = frame.levels.stages[dsp::index(selected)];
+        const auto x = xAt(i);
+        const auto add = [i, firstFrame, x](Path& path, float y)
+        {
+            if (i == firstFrame)
+                path.startNewSubPath(x, y);
+            else
+                path.lineTo(x, y);
+        };
+        add(input, levelToY(area, dsp::dbFromGain(tapView ? frame.tapPeak : stage.inputPeak), meterFloorDb, 0.0f));
+        if (!tapView)
+            add(output, levelToY(area, dsp::dbFromGain(stage.outputPeak), meterFloorDb, 0.0f));
+        if (showGain)
+            add(gain, levelToY(area, bandView ? frame.levels.bands[band] : stage.gainDb,
+                               -dsp::maxRangeDb, dsp::maxRangeDb));
+    }
+    auto fill = input;
+    fill.lineTo(area.getRight(), area.getBottom());
+    fill.lineTo(xAt(firstFrame), area.getBottom());
+    fill.closeSubPath();
+    g.setColour(levelColour.withAlpha(0.25f));
+    g.fillPath(fill);
+    g.setColour(levelColour.withAlpha(0.80f));
+    g.strokePath(input, PathStrokeType(1.0f));
+    g.setColour(outputColour);
+    g.strokePath(output, PathStrokeType(1.1f));
+    g.setColour(gainColour);
+    g.strokePath(gain, PathStrokeType(1.4f));
 }
 
 void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
@@ -1246,13 +1388,16 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
                              : dsp::Curve::compress;
     const auto dynamics = isLow ? settings.lowLevel : settings.compressor;
     const auto on = selected == Stage::limiter ? settings.limiter.enabled : dynamics.enabled;
+    const auto outputAt = [&](float input)
+    {
+        return selected == Stage::limiter ? std::min(input + settings.limiter.drive, settings.limiter.ceiling)
+            : input + dsp::staticGain(input, dynamics, curve) + dynamics.makeup;
+    };
     Path trace;
     for (int point = 0; point <= 156; ++point)
     {
         const auto input = transferMinDb + static_cast<float>(point) * 0.5f;
-        const auto output = selected == Stage::limiter
-            ? std::min(input + settings.limiter.drive, settings.limiter.ceiling)
-            : input + dsp::staticGain(input, dynamics, curve) + dynamics.makeup;
+        const auto output = outputAt(input);
         if (point == 0)
             trace.startNewSubPath(inputToX(area, input), levelToY(area, output));
         else
@@ -1272,9 +1417,23 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     else
     {
         const auto x = inputToX(area, dynamics.threshold);
-        const auto output = dynamics.threshold + dsp::staticGain(dynamics.threshold, dynamics, curve) + dynamics.makeup;
+        const auto output = outputAt(dynamics.threshold);
         g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
         drawNode(g, { x, levelToY(area, output) }, yellow, true);
+    }
+    if (historyCount > 0 && Time::getMillisecondCounterHiRes() - lastHistoryUpdate < 320.0)
+    {
+        const auto& newest = historyAt(historyCount - 1).levels.stages[dsp::index(selected)];
+        const auto input = dsp::dbFromGain(newest.inputPeak);
+        if (input >= transferMinDb)
+        {
+            const auto db = std::min(input, transferMaxDb);
+            const Point<float> point { inputToX(area, db), levelToY(area, outputAt(db)) };
+            g.setColour(graph);
+            g.fillEllipse(Rectangle<float>(11.0f, 11.0f).withCentre(point));
+            g.setColour(on && !processor.isBypassed() ? bandColours[2] : muted);
+            g.fillEllipse(Rectangle<float>(7.5f, 7.5f).withCentre(point));
+        }
     }
 
     auto sidebar = bounds.withLeft(area.getRight() + 8.0f);
@@ -1473,7 +1632,7 @@ void Editor::drawTonalBalance(Graphics& g, Rectangle<float> bounds)
         label(g, theme.font(11.5f, true), count > 0 ? "Waiting for audio at this tap" : "Sample rate below analyzer range",
               notice.toNearestInt(), muted, Justification::centred);
     }
-    const auto footer = bounds.toNearestInt().withY(roundToInt(bounds.getBottom()) + 1).withHeight(14);
+    const auto footer = bounds.toNearestInt().withY(roundToInt(historyBounds().getBottom()) + 1).withHeight(14);
     label(g, theme.font(10.0f), targetId == 4 && !captured
           ? "Play audio and press Capture to save a reference" : "Level-matched spectral balance   /   Move to compare taps",
           footer, muted, Justification::centred);
@@ -1606,6 +1765,16 @@ std::uint32_t Editor::currentTonalKey() const
                                  processor.isBypassed());
 }
 
+void Editor::transformLongSpectrum()
+{
+    for (auto& channel : tonalBuffer)
+    {
+        tonalWindow.multiplyWithWindowingTable(channel.data(), Processor::tonalFftSize);
+        std::fill(channel.begin() + Processor::tonalFftSize, channel.end(), 0.0f);
+        tonalFft.performFrequencyOnlyForwardTransform(channel.data(), true);
+    }
+}
+
 void Editor::updateTonalSpectrum()
 {
     const auto key = currentTonalKey();
@@ -1625,12 +1794,7 @@ void Editor::updateTonalSpectrum()
             captureReference.setEnabled(false);
             return;
         }
-        for (auto& channel : tonalBuffer)
-        {
-            tonalWindow.multiplyWithWindowingTable(channel.data(), Processor::tonalFftSize);
-            std::fill(channel.begin() + Processor::tonalFftSize, channel.end(), 0.0f);
-            tonalFft.performFrequencyOnlyForwardTransform(channel.data(), true);
-        }
+        transformLongSpectrum();
         const auto power = dsp::tonalBandPower(tonalBuffer[0].data(), tonalBuffer[1].data(),
                                              Processor::tonalFftSize, processor.displayRate());
         const auto total = dsp::tonalEnergy(power);
@@ -1652,6 +1816,74 @@ void Editor::updateTonalSpectrum()
         lastTonalFrame = 0.0;
     }
     captureReference.setEnabled(lastTonalFrame > 0.0);
+}
+
+void Editor::updateGeqSpectrum()
+{
+    const auto& route = dsp::orders[static_cast<std::size_t>(settings.order)];
+    const auto position = dsp::stagePosition(route, Stage::geq) + 1;
+    const auto key = processor.spectrumKey(Processor::SpectrumView::geq, settings.order, position, processor.isBypassed());
+    const auto clear = [this]
+    {
+        geqSpectrum.fill(geqRtaMinDb);
+        lastGeqFrame = 0.0;
+    };
+    if (key != geqSpectrumKey)
+    {
+        geqSpectrumKey = key;
+        clear();
+    }
+    const auto now = Time::getMillisecondCounterHiRes();
+    if (!processor.readSpectrum(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize, key))
+    {
+        if (now - lastGeqFrame > 650.0)
+            clear();
+        return;
+    }
+    if (!dsp::tonalAboveFloor(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize,
+                             static_cast<float>(rtaSensitivity.getValue()), lastGeqFrame > 0.0))
+    {
+        clear();
+        return;
+    }
+    transformLongSpectrum();
+    const auto power = dsp::geqBandPower(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize,
+                                       processor.displayRate());
+    const auto fall = static_cast<float>((now - lastGeqFrame) * 0.045);
+    for (std::size_t i = 0; i < geqSpectrum.size(); ++i)
+    {
+        // Convert the one-sided Hann-windowed FFT power to RMS dBFS.
+        const auto db = dsp::tonalDb(power[i] * (16.0f / 3.0f));
+        geqSpectrum[i] = std::clamp(std::max(db, geqSpectrum[i] - fall), geqRtaMinDb, 0.0f);
+    }
+    lastGeqFrame = now;
+}
+
+const Processor::HistoryFrame& Editor::historyAt(int i) const
+{
+    const auto slot = (historyHead + Processor::historyLength - historyCount + i) % Processor::historyLength;
+    return history[static_cast<std::size_t>(slot)];
+}
+
+void Editor::updateMeterHistory()
+{
+    std::array<Processor::HistoryFrame, Processor::historyLength> frames;
+    const auto count = processor.readMeterHistory(frames.data(), static_cast<int>(frames.size()));
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& frame = frames[static_cast<std::size_t>(i)];
+        if (historyCount > 0)
+        {
+            const auto& previous = historyAt(historyCount - 1);
+            if (frame.epoch != previous.epoch || frame.sequence != previous.sequence + 1u)
+                historyCount = 0;
+        }
+        history[static_cast<std::size_t>(historyHead)] = frame;
+        historyHead = (historyHead + 1) % Processor::historyLength;
+        historyCount = std::min(historyCount + 1, Processor::historyLength);
+    }
+    if (count > 0)
+        lastHistoryUpdate = Time::getMillisecondCounterHiRes();
 }
 
 void Editor::animateLights()
@@ -1688,6 +1920,7 @@ void Editor::timerCallback()
     if (order != previous)
         resized();
     meters = processor.readMeters();
+    updateMeterHistory();
     peaks = processor.readPeaks();
     const std::array on { settings.lowLevel.enabled, settings.multiEnabled, settings.compressor.enabled,
                           settings.limiter.enabled, settings.geq.enabled };
@@ -1711,6 +1944,7 @@ void Editor::timerCallback()
         const auto nyquist = processor.displayRate() * 0.5f;
         for (std::size_t i = 0; i < geqFaders.size(); ++i)
             geqFaders[i].setEnabled(dsp::geqFrequencies[i] < nyquist);
+        updateGeqSpectrum();
     }
     animateLights();
     repaint();

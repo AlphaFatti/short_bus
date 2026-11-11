@@ -111,11 +111,16 @@ private:
     void applyOrder();
     void updateSpectrum();
     void updateTonalSpectrum();
+    void updateGeqSpectrum();
+    void transformLongSpectrum();
+    void updateMeterHistory();
+    const Processor::HistoryFrame& historyAt(int index) const;
     std::uint32_t currentTonalKey() const;
     bool tonalSelected() const { return selectedTile == tonalTile; }
     bool geqSelected() const { return !tonalSelected() && selected == dsp::Stage::geq; }
     PresetScope presetScope() const;
     juce::Rectangle<float> plot() const;
+    juce::Rectangle<float> historyBounds() const;
     juce::Rectangle<int> geqControls() const;
     juce::Rectangle<float> transferArea() const;
     juce::Rectangle<float> spectrumArea() const;
@@ -133,6 +138,7 @@ private:
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
     void drawTonalBalance(juce::Graphics&, juce::Rectangle<float>);
     void drawGraphicEq(juce::Graphics&);
+    void drawMeterHistory(juce::Graphics&);
     void drawFineTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
                       const dsp::TonalCurve& live, int count);
     void drawBroadTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
@@ -151,6 +157,9 @@ private:
     dsp::Settings settings;
     dsp::BandSpans bandSpans {};
     dsp::Metering meters;
+    std::array<Processor::HistoryFrame, Processor::historyLength> history {};
+    int historyHead = 0, historyCount = 0;
+    double lastHistoryUpdate = 0.0;
     std::array<float, 2> peaks {};
     std::array<float, 2> lampGlow {};
     double lastLampTick = juce::Time::getMillisecondCounterHiRes();
@@ -196,5 +205,8 @@ private:
     dsp::TonalCurve tonalAverage {};
     std::uint32_t tonalKey = 0;
     double lastTonalFrame = 0.0;
+    std::array<float, dsp::geqBandCount> geqSpectrum {};
+    std::uint32_t geqSpectrumKey = 0;
+    double lastGeqFrame = 0.0;
 };
 } // namespace shortbus
