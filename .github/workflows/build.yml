@@ -32,6 +32,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 2
 
+      - name: Sign Apple Silicon bundle
+        if: runner.os == 'macOS'
+        run: |
+          bundle="build/ShortBus_artefacts/Release/VST3/Short Bus.vst3"
+          codesign --force --sign - "$bundle"
+          codesign --verify --strict "$bundle"
+
       - name: Test DSP and load VST3
         run: ctest --test-dir build -C Release --output-on-failure
 
@@ -52,3 +59,68 @@ jobs:
           name: Short-Bus-${{ matrix.platform }}
           path: Short-Bus-${{ matrix.platform }}.zip
           if-no-files-found: error
+
+  release:
+    # A squash commit titled "Release Short Bus vX.Y.Z" requests a preview.
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      startsWith(github.event.head_commit.message, 'Release Short Bus v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: short-bus-preview-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Short-Bus-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish tested preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_MESSAGE: ${{ github.event.head_commit.message }}
+        shell: bash
+        run: |
+          version=$(sed -nE 's/^project\(ShortBus VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*\)$/\1/p' CMakeLists.txt)
+          tag="v$version"
+          if [[ -z "$version" || "${RELEASE_MESSAGE%%$'\n'*}" != "Release Short Bus $tag" ]]; then
+            echo "The release title must match the CMake version."
+            exit 1
+          fi
+
+          notes="docs/releases/$tag.md"
+          test -s "$notes"
+          assets=()
+          for platform in macOS-arm64 Windows-x64; do
+            source="dist/Short-Bus-$platform.zip"
+            asset="dist/Short-Bus-$tag-$platform.zip"
+            test -s "$source"
+            mv "$source" "$asset"
+            assets+=("$asset")
+          done
+
+          tag_commit=$(git ls-remote origin "refs/tags/$tag" "refs/tags/$tag^{}" | tail -n 1 | cut -f 1)
+          if [[ -n "$tag_commit" && "$tag_commit" != "$GITHUB_SHA" ]]; then
+            echo "The tag $tag already points to another commit."
+            exit 1
+          fi
+          if gh release view "$tag" --json isDraft,targetCommitish > existing-release.json; then
+            jq -e --arg commit "$GITHUB_SHA" '.targetCommitish == $commit' existing-release.json >/dev/null
+            if jq -e '.isDraft == false' existing-release.json >/dev/null; then
+              exit 0
+            fi
+          else
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --prerelease \
+              --title "Short Bus $tag preview" --notes-file "$notes"
+          fi
+          gh release upload "$tag" "${assets[@]}" --clobber
+          gh release edit "$tag" --draft=false
