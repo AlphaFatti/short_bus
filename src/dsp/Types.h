@@ -159,6 +159,7 @@ struct LimiterSettings
     float ceiling = -1.0f;
     float drive = 0.0f;
     float release = 100.0f;
+    bool adaptive = true;
 };
 
 struct GraphicEqSettings

@@ -20,16 +20,39 @@ Frame Delay::push(Frame input)
     return output;
 }
 
+void Limiter::MovingAverage::prepare(int length)
+{
+    values.fill(0.0);
+    size = length;
+    cursor = 0;
+    sum = 0.0;
+}
+
+double Limiter::MovingAverage::process(double input)
+{
+    const auto slot = static_cast<std::size_t>(cursor);
+    sum += input - values[slot];
+    values[slot] = input;
+    if (++cursor == size)
+        cursor = 0;
+    return std::clamp(sum / size, 0.0, 1.0);
+}
+
 void Limiter::prepare(float rate, int samples)
 {
+    samples = std::clamp(samples, 1, maxDelay);
     delay.prepare(samples);
     head = tail = 0;
     frame = 0;
     delaySamples = static_cast<std::uint64_t>(samples);
     sampleRate = rate;
-    attack = timeCoefficient(rate, lookaheadMs / 8.0f);
+    firstAverage.prepare(samples / 2 + 1);
+    secondAverage.prepare(samples - samples / 2 + 1);
+    memoryAttack = timeCoefficient(rate, 50.0f);
+    memoryRelease = timeCoefficient(rate, 250.0f);
     slew = timeCoefficient(rate, 10.0f);
     gain = 1.0f;
+    reduction = activity = 0.0;
     configured = false;
 }
 
@@ -37,7 +60,12 @@ void Limiter::configure(LimiterSettings settings)
 {
     ceiling = gainFromDb(settings.ceiling);
     driveTarget = gainFromDb(settings.drive);
-    release = timeCoefficient(sampleRate, settings.release);
+    // W1's published fixed release convention is three times the indicated time at RT60.
+    constexpr double log1000 = 6.907755278982137;
+    const auto rt60 = 3.0 * settings.release;
+    release = -std::expm1(-1000.0 * log1000 / (sampleRate * rt60));
+    slowRelease = timeCoefficient(sampleRate, std::max(250.0f, 4.0f * settings.release));
+    adaptive = settings.adaptive;
     mixTarget = settings.enabled ? 1.0f : 0.0f;
     if (!configured)
     {
@@ -65,15 +93,20 @@ Frame Limiter::process(Frame input)
     const auto futurePeak = trackPeak(peak(input));
     drive += slew * (driveTarget - drive);
     mix = smoothMix(mix, mixTarget, slew);
-    if (mix <= 0.0f)
-    {
-        gain = 1.0f;
-        return delayed;
-    }
-
     const auto wanted = std::min(1.0f, ceiling / std::max(1.0e-9f, drive * futurePeak));
-    gain += (wanted < gain ? attack : release) * (wanted - gain);
-    // Bound the current sample even if automation or a steep transient outruns the envelope.
+    const auto required = 1.0 - wanted;
+    activity += (reduction > activity ? memoryAttack : memoryRelease) * (reduction - activity);
+    const auto sustained = adaptive ? std::clamp(4.0 * activity, 0.0, 1.0) : 0.0;
+    const auto recovery = release + sustained * (slowRelease - release);
+    reduction = std::max(required, reduction * (1.0 - recovery));
+
+    // The finite smoothing support fits inside the peak hold. Every peak reaches
+    // the output only after the complete gain ramp, without a normal-operation clamp.
+    const auto smoothed = secondAverage.process(firstAverage.process(reduction));
+    gain = static_cast<float>(1.0 - smoothed);
+    if (mix <= 0.0f)
+        return delayed;
+    // Catch abrupt ceiling/drive automation and floating-point roundoff.
     gain = std::min(gain, ceiling / std::max(1.0e-9f, drive * peak(delayed)));
     const auto limited = scale(delayed, drive * gain);
     return blend(delayed, limited, mix);

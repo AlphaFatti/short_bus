@@ -513,6 +513,11 @@ Editor::Editor(Processor& owner)
         repaint();
     };
     addChildComponent(captureReference);
+    style(adaptiveRelease, true);
+    adaptiveRelease.setTitle("Limiter adaptive release");
+    adaptiveRelease.setTooltip("Longer recovery for sustained limiting. The Release control sets the base recovery time.");
+    addChildComponent(adaptiveRelease);
+    adaptiveReleaseLink = std::make_unique<ButtonLink>(processor.state, param::limitAdaptive, adaptiveRelease);
     modeLink = std::make_unique<ChoiceLink>(processor.state, param::mode, mode);
     targetLink = std::make_unique<ChoiceLink>(processor.state, param::rtaTarget, targetChoice);
     tonalModeLink = std::make_unique<ChoiceLink>(processor.state, param::rtaView, tonalMode);
@@ -639,6 +644,7 @@ void Editor::bindControls()
     boundCompressorMode = settings.compressorMode;
     const auto isMulti = !isTonal && selected == Stage::multiband;
     compressorModeBox.setVisible(!isTonal && selected == Stage::compressor);
+    adaptiveRelease.setVisible(!isTonal && selected == Stage::limiter);
     mode.setVisible(!isTonal && selected == Stage::lowLevel);
     for (auto* control : std::array<Component*, 4> { &targetChoice, &tonalMode, &captureReference, &rtaSensitivity })
         control->setVisible(isTonal);
@@ -950,6 +956,7 @@ void Editor::resized()
     }
     auto modeArea = plot().withLeft(transferArea().getRight() + 8.0f + 3.0f * stageMeterWidth).toNearestInt().reduced(8, 9);
     compressorModeBox.setBounds(modeArea.removeFromBottom(24));
+    adaptiveRelease.setBounds(compressorModeBox.getBounds());
     if (geqSelected())
     {
         auto bank = plot().toNearestInt().withTrimmedLeft(30).withTrimmedRight(28)
@@ -1458,6 +1465,8 @@ void Editor::drawTransfer(Graphics& g, Rectangle<float> bounds)
     if (limiterSelected)
     {
         hint("Ceiling up/down");
+        if (bounds.getHeight() >= 145.0f)
+            hint(settings.limiter.adaptive ? "Recovery follows audio" : "Fixed recovery");
     }
     else
     {

@@ -30,6 +30,8 @@ void restoreMissingParameter(AudioProcessorValueTreeState& state, ValueTree& res
 
 void restoreMissingPresetParameters(AudioProcessorValueTreeState& state, ValueTree& restored, PresetScope scope)
 {
+    if (scope == PresetScope::bus || scope == PresetScope::limiter)
+        restoreMissingParameter(state, restored, param::limitAdaptive);
     if (scope == PresetScope::bus || scope == PresetScope::compressor)
         for (const auto* id : compressorCharacterParameters)
             restoreMissingParameter(state, restored, id);
@@ -180,6 +182,7 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
     layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::geqPosition, 1 }, "GEQ Position",
         StringArray { "Before limiter", "First", "Second", "Third", "Fourth", "Fifth" }, 0));
     addToggle(layout, param::rtaAfterGeq, "RTA After GEQ At Shared Position", true);
+    addToggle(layout, param::limitAdaptive, "Limiter Adaptive Release", true);
     return layout;
 }
 
@@ -216,6 +219,7 @@ Processor::Processor()
     ceiling = state.getRawParameterValue(param::id(param::limit, "ceiling"));
     drive = state.getRawParameterValue(param::id(param::limit, "drive"));
     limitRelease = state.getRawParameterValue(param::id(param::limit, "release"));
+    limitAdaptive = state.getRawParameterValue(param::limitAdaptive);
     geqOn = state.getRawParameterValue(param::geqEnabled);
     saturation = state.getRawParameterValue(param::saturation);
     for (std::size_t i = 0; i < geqGains.size(); ++i)
@@ -253,7 +257,7 @@ dsp::Settings Processor::currentSettings() const
         const auto& refs = bandRefs[i];
         settings.bands[i] = { read(refs.low), read(refs.high), refs.dynamics.read(), read(refs.lift) > 0.5f };
     }
-    settings.limiter = { read(limitOn) > 0.5f, read(ceiling), read(drive), read(limitRelease) };
+    settings.limiter = { read(limitOn) > 0.5f, read(ceiling), read(drive), read(limitRelease), read(limitAdaptive) > 0.5f };
     settings.geq.enabled = read(geqOn) > 0.5f;
     settings.geq.saturation = read(saturation);
     for (std::size_t i = 0; i < geqGains.size(); ++i)

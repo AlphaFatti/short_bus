@@ -194,5 +194,21 @@ int main()
             && near(processor->state.getRawParameterValue(param::rtaFloor)->load(), dsp::defaultRtaFloorDb)
             && processor->currentSettings().order == 7,
             "older Bus presets load with a neutral GEQ and their original dynamics order");
+    set(*processor, param::limitAdaptive, 0.0f);
+    const auto fixedLimiter = processor->presetState(PresetScope::limiter);
+    set(*processor, param::limitAdaptive, 1.0f);
+    require(processor->applyPreset(fixedLimiter, PresetScope::limiter).wasOk()
+            && !processor->currentSettings().limiter.adaptive, "limiter presets recall fixed recovery");
+    auto oldLimiter = fixedLimiter.createCopy();
+    oldLimiter.removeChild(oldLimiter.getChildWithProperty("id", param::limitAdaptive), nullptr);
+    require(processor->applyPreset(oldLimiter, PresetScope::limiter).wasOk()
+            && processor->currentSettings().limiter.adaptive, "older limiter presets receive adaptive recovery");
+    processor->getStateInformation(hostState);
+    auto oldSession = ValueTree::fromXml(*AudioProcessor::getXmlFromBinary(hostState.getData(), static_cast<int>(hostState.getSize())));
+    oldSession.removeChild(oldSession.getChildWithProperty("id", param::limitAdaptive), nullptr);
+    AudioProcessor::copyXmlToBinary(*oldSession.createXml(), hostState);
+    set(*processor, param::limitAdaptive, 0.0f);
+    processor->setStateInformation(hostState.getData(), static_cast<int>(hostState.getSize()));
+    require(processor->currentSettings().limiter.adaptive, "older host sessions receive adaptive recovery");
     std::cout << "Preset files, scopes, safes, validation and tile orders passed\n";
 }
