@@ -18,6 +18,7 @@ inline constexpr auto low = "low";
 inline constexpr auto multi = "multi";
 inline constexpr auto comp = "comp";
 inline constexpr auto limit = "limit";
+inline constexpr auto limitAdaptive = "limit_adaptive";
 inline constexpr auto geq = "geq";
 inline constexpr auto geqEnabled = "geq_enabled";
 inline constexpr auto saturation = "geq_saturation";
@@ -149,7 +150,7 @@ private:
     Atomic *rtaSlot = nullptr, *geqSlot = nullptr, *rtaAfterEq = nullptr;
     Atomic *compressorMode = nullptr, *optoAttack = nullptr, *optoRelease = nullptr;
     Atomic *fetAttack = nullptr, *fetRelease = nullptr;
-    Atomic *limitOn = nullptr, *ceiling = nullptr, *drive = nullptr, *limitRelease = nullptr;
+    Atomic *limitOn = nullptr, *ceiling = nullptr, *drive = nullptr, *limitRelease = nullptr, *limitAdaptive = nullptr;
     Atomic *geqOn = nullptr, *saturation = nullptr;
     std::array<Atomic*, dsp::geqBandCount> geqGains {};
     dsp::Rack rack;

@@ -176,6 +176,7 @@ private:
     juce::TextButton earlier { "<" }, later { ">" };
     juce::TextButton captureReference { "Capture" };
     juce::TextButton flatEq { "Flat EQ" };
+    juce::TextButton adaptiveRelease { "Auto release" };
     juce::ComboBox mode, targetChoice, tonalMode, compressorModeBox;
     juce::Slider rtaSensitivity, saturationDial;
     std::array<juce::Slider, dsp::geqBandCount> geqFaders;
@@ -184,7 +185,7 @@ private:
     std::array<std::unique_ptr<SliderLink>, controlCount> sliderLinks;
     std::array<std::unique_ptr<SliderLink>, dsp::geqBandCount> geqLinks;
     std::unique_ptr<SliderLink> sensitivityLink, saturationLink;
-    std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink;
+    std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink, adaptiveReleaseLink;
     std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink, compressorModeLink;
     std::optional<GraphDrag> graphDrag;
     std::optional<TileDrag> tileDrag;

@@ -240,7 +240,8 @@ void liveReorder()
     settings.order = 1;
     rack.configure(settings);
     auto previous = before;
-    for (int i = 0; i < 12000; ++i)
+    // Allow adaptive recovery to settle after moving the limiter ahead of makeup gain.
+    for (int i = 0; i < 72000; ++i)
     {
         const auto output = rack.process(input);
         check(std::abs(output[0] - previous) < 0.002f, "continuous reorder");

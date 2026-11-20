@@ -28,6 +28,15 @@ public:
     float meter() const { return dbFromGain(gain) * mix; }
 
 private:
+    struct MovingAverage
+    {
+        void prepare(int length);
+        double process(double input);
+
+        std::array<double, maxDelay / 2 + 2> values {};
+        double sum = 0.0;
+        int size = 1, cursor = 0;
+    };
     struct Peak { std::uint64_t frame; float value; };
     static constexpr std::size_t queueCapacity = maxDelay + 2;
 
@@ -36,6 +45,7 @@ private:
     float trackPeak(float amplitude);
 
     Delay delay;
+    MovingAverage firstAverage, secondAverage;
     std::array<Peak, queueCapacity> peaks {};
     std::size_t head = 0, tail = 0;
     std::uint64_t frame = 0;
@@ -43,7 +53,10 @@ private:
     float sampleRate = 48000.0f;
     float ceiling = 1.0f, drive = 1.0f, driveTarget = 1.0f;
     float gain = 1.0f, mix = 0.0f, mixTarget = 0.0f;
-    float attack = 1.0f, release = 1.0f, slew = 1.0f;
+    double reduction = 0.0, activity = 0.0;
+    double release = 1.0, slowRelease = 1.0, memoryAttack = 1.0, memoryRelease = 1.0;
+    float slew = 1.0f;
+    bool adaptive = true;
     bool configured = false;
 };
 

@@ -87,7 +87,7 @@ int main(int argc, char** argv)
     require(std::abs(processConstant(*plugin, 180) - 0.707946f) < 0.002f, "Limiter-last routing failed");
 
     parameter(*plugin, "Strip Order").setValueNotifyingHost(1.0f / 23.0f);
-    require(processConstant(*plugin, 180) > 1.20f, "Changing strip order must change processing");
+    require(processConstant(*plugin, 600) > 1.20f, "Changing strip order must change processing after release settles");
     parameter(*plugin, "5-Band Enabled").setValueNotifyingHost(1.0f);
     parameter(*plugin, "Band 1 Upward Compression").setValueNotifyingHost(1.0f);
     set(*plugin, "Band 1 Range", "6");
@@ -101,6 +101,7 @@ int main(int argc, char** argv)
     set(*plugin, "GEQ 1000 Hz", "4.5");
     set(*plugin, "GEQ Saturation", "75");
     set(*plugin, "GEQ Position", "Fifth");
+    parameter(*plugin, "Limiter Adaptive Release").setValueNotifyingHost(0.0f);
     require(std::abs(processConstant(*plugin, 20, 0.01f) - 0.03981f) < 0.001f, "moving RTA changed audio");
     MemoryBlock saved;
     plugin->getStateInformation(saved);
@@ -115,6 +116,7 @@ int main(int argc, char** argv)
     require(parameter(*recalled, "RTA View").getValue() > 0.99f, "RTA view failed to recall");
     require(parameter(*recalled, "Compressor Mode").getValue() > 0.99f, "Compressor mode failed to recall");
     require(parameter(*recalled, "Compressor FET Attack").getValue() < 0.001f, "FET attack failed to recall");
+    require(parameter(*recalled, "Limiter Adaptive Release").getValue() < 0.001f, "Limiter recovery failed to recall");
     require(std::abs(parameter(*recalled, "RTA Sensitivity Floor").getValue() - 36.0f / 66.0f) < 0.001f,
             "RTA sensitivity failed to recall");
     require(std::abs(parameter(*recalled, "GEQ 1000 Hz").getValue() - 16.5f / 24.0f) < 0.001f,
