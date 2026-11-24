@@ -182,6 +182,7 @@ private:
     juce::TextButton earlier { "<" }, later { ">" };
     juce::TextButton resetStage { "Reset" };
     juce::TextButton assistButton { "Assist" }, pinkSlope { "Pink Slope" };
+    juce::TextButton keepManualButton { "Keep Manual" };
     juce::TextButton captureReference { "Capture" };
     juce::TextButton flatEq { "Flat EQ" };
     juce::TextButton adaptiveRelease { "Auto release" };
@@ -194,6 +195,7 @@ private:
     std::array<std::unique_ptr<SliderLink>, dsp::geqBandCount> geqLinks;
     std::unique_ptr<SliderLink> sensitivityLink, saturationLink, assistFocusLink;
     std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink, adaptiveReleaseLink, assistLink, pinkSlopeLink;
+    std::unique_ptr<ButtonLink> keepManualLink;
     std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink, compressorModeLink, assistProfileLink;
     std::optional<GraphDrag> graphDrag;
     std::optional<TileDrag> tileDrag;

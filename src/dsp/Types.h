@@ -156,12 +156,19 @@ constexpr std::array<BandSettings, bandCount> bandDefaults {{
 
 constexpr float defaultAssistFocus = 45.0f;
 constexpr float assistMaxCutDb = 3.0f;
+constexpr float musicAssistMaxCutDb = 2.0f;
+
+constexpr float assistCutLimit(AssistProfile profile)
+{
+    return profile == AssistProfile::speech ? assistMaxCutDb : musicAssistMaxCutDb;
+}
 
 struct AssistSettings
 {
     bool enabled = false;
     AssistProfile profile = AssistProfile::speech;
     float focus = defaultAssistFocus;
+    bool keepManual = false;
 };
 
 struct LimiterSettings

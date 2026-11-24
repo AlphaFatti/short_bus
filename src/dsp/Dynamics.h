@@ -117,7 +117,7 @@ public:
 
     Frame process(Frame detectorInput, Frame signal)
     {
-        return applyGain(signal, manualGain(detect(detectorInput)));
+        return applyGain(signal, envelope.tick(detect(detectorInput)));
     }
 
     float detect(Frame input)
@@ -134,8 +134,6 @@ public:
         }
         return peak(isolated);
     }
-
-    float manualGain(float detectorPeak) { return envelope.tick(detectorPeak); }
 
     Frame applyGain(Frame signal, float db)
     {

@@ -19,6 +19,7 @@ inline constexpr auto multi = "multi";
 inline constexpr auto multiAssist = "multi_assist";
 inline constexpr auto assistProfile = "multi_assist_profile";
 inline constexpr auto assistFocus = "multi_assist_focus";
+inline constexpr auto assistKeepManual = "multi_assist_keep_manual";
 inline constexpr auto comp = "comp";
 inline constexpr auto limit = "limit";
 inline constexpr auto limitAdaptive = "limit_adaptive";
@@ -152,7 +153,7 @@ private:
     DynamicsRefs lowRefs {}, compRefs {};
     std::array<BandRefs, dsp::bandCount> bandRefs {};
     Atomic *mode = nullptr, *order = nullptr, *bypass = nullptr, *multiOn = nullptr;
-    Atomic *assistOn = nullptr, *assistProfile = nullptr, *assistFocus = nullptr;
+    Atomic *assistOn = nullptr, *assistProfile = nullptr, *assistFocus = nullptr, *keepManual = nullptr;
     Atomic *rtaSlot = nullptr, *geqSlot = nullptr, *rtaAfterEq = nullptr;
     Atomic *compressorMode = nullptr, *optoAttack = nullptr, *optoRelease = nullptr;
     Atomic *fetAttack = nullptr, *fetRelease = nullptr;

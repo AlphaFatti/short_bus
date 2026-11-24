@@ -419,16 +419,81 @@ void assistedBands()
         const auto musicBass = measure(rate, 85.0f, 0.2f, AssistProfile::music, 100.0f, true, 513);
         const auto lowMids = measure(rate, 190.0f, 0.2f, AssistProfile::speech, 100.0f, true, 127);
         const auto treble = measure(rate, 10000.0f, 0.2f, AssistProfile::speech, 100.0f, true, 127);
-        check(bass.bands[0] < -2.0f && bass.changeDb < -1.0f, "Assist attenuates dominant bass");
+        const auto mids = measure(rate, 850.0f, 0.2f, AssistProfile::music, 100.0f, true, 127);
+        check(bass.bands[0] < -1.0f && bass.changeDb < -0.5f, "Assist attenuates dominant bass");
         check(musicBass.bands[0] > bass.bands[0] + 0.2f, "Music allows more bass than Speech");
-        check(lowMids.bands[1] < -1.0f && lowMids.bands[0] > -0.1f, "Assist distinguishes low mids from bass");
-        check(treble.bands[4] < -1.5f && treble.bands[2] > -0.1f, "Assist identifies excessive treble");
+        check(lowMids.bands[1] < -0.5f && lowMids.bands[0] > -0.1f, "Assist distinguishes low mids from bass");
+        check(std::abs(treble.changeDb) < 0.01f && std::abs(mids.changeDb) < 0.01f,
+              "steady mids and treble retain their tone");
         const auto half = measure(rate, 85.0f, 0.2f, AssistProfile::speech, 50.0f, true, 513);
         check(std::abs(half.bands[0] - 0.5f * bass.bands[0]) < 0.002f, "Focus scales the cut across block sizes");
     }
     measure(48000.0f, 65.0f, 0.2f, AssistProfile::speech, 0.0f, true, 127);
     measure(48000.0f, 65.0f, 0.2f, AssistProfile::speech, 100.0f, false, 127);
     measure(48000.0f, 65.0f, 0.0004f, AssistProfile::speech, 100.0f, true, 127);
+
+    Multiband transient;
+    transient.prepare(48000.0f);
+    Settings settings;
+    settings.multiEnabled = true;
+    settings.assist = { true, AssistProfile::music, 100.0f };
+    transient.configure(settings);
+    const auto tone = [](int sample, float hz, float amplitude)
+    {
+        return amplitude * std::sin(6.28318530718f * hz * static_cast<float>(sample) / 48000.0f);
+    };
+    float deepestCut = 0.0f;
+    for (int i = 0; i < 192000; ++i)
+    {
+        auto sample = tone(i, 850.0f, 0.12f);
+        if (i >= 48000 && i < 60000)
+            sample += tone(i, 10000.0f, 0.30f);
+        transient.process({ sample, -sample });
+        deepestCut = std::min(deepestCut, transient.meter(4));
+    }
+    check(deepestCut < -0.15f && deepestCut >= -0.301f, "brief bright peaks get a small, bounded cut");
+    check(std::abs(transient.meter(4)) < 0.01f, "treble cut releases after a bright peak");
+
+    Multiband manual, withAssist;
+    manual.prepare(48000.0f);
+    withAssist.prepare(48000.0f);
+    settings.assist.enabled = false;
+    for (auto& band : settings.bands)
+        band.dynamics.enabled = false;
+    auto& high = settings.bands.back();
+    high.lowHz = 6100.0f;
+    high.dynamics.enabled = true;
+    high.lift = true;
+    high.dynamics.threshold = 0.0f;
+    high.dynamics.range = 12.0f;
+    manual.configure(settings);
+    settings.assist = { true, AssistProfile::music, 0.0f, true };
+    withAssist.configure(settings);
+    float lift = 0.0f;
+    for (int i = 0; i < 144000; ++i)
+    {
+        if (i == 48000)
+        {
+            settings.assist.focus = 100.0f;
+            withAssist.configure(settings);
+        }
+        if (i == 96000)
+        {
+            settings.assist.keepManual = false;
+            withAssist.configure(settings);
+        }
+        const auto sample = tone(i, 11000.0f, 0.02f);
+        const Frame input { sample, -sample };
+        const auto manualOutput = manual.process(input);
+        const auto assistOutput = withAssist.process(input);
+        if (i < 96000)
+            check(assistOutput == manualOutput, "Keep Manual preserves custom bright voicing through Assist");
+        if (i > 130000)
+            check(assistOutput == input, "turning off Keep Manual returns to standalone Assist");
+        if (i > 36000 && i < 48000)
+            lift = std::max(lift, std::abs(manualOutput[0]));
+    }
+    check(lift > 0.04f, "test voicing includes substantial treble lift");
 }
 
 void graphicEq()

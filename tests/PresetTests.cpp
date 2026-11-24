@@ -34,18 +34,25 @@ void assistAndStageResets(Processor& processor)
     set(processor, param::multiAssist, 1.0f);
     set(processor, param::assistProfile, 1.0f);
     set(processor, param::assistFocus, 72.0f);
+    set(processor, param::assistKeepManual, 1.0f);
     set(processor, "band2_threshold", -36.0f);
     const auto assistPreset = processor.presetState(PresetScope::multiband);
     auto oldAssistPreset = assistPreset.createCopy();
-    constexpr std::array assistIds { param::multiAssist, param::assistProfile, param::assistFocus };
+    constexpr std::array assistIds { param::multiAssist, param::assistProfile, param::assistFocus, param::assistKeepManual };
     for (const auto* id : assistIds)
         oldAssistPreset.removeChild(oldAssistPreset.getChildWithProperty("id", id), nullptr);
     require(processor.applyPreset(oldAssistPreset, PresetScope::multiband).wasOk()
             && !processor.currentSettings().assist.enabled
             && near(processor.currentSettings().assist.focus, dsp::defaultAssistFocus),
             "older 5-Band presets load manual mode and default Focus");
+    auto standaloneAssist = assistPreset.createCopy();
+    standaloneAssist.removeChild(standaloneAssist.getChildWithProperty("id", param::assistKeepManual), nullptr);
+    require(processor.applyPreset(standaloneAssist, PresetScope::multiband).wasOk()
+            && processor.currentSettings().assist.enabled && !processor.currentSettings().assist.keepManual,
+            "older Assist presets retain standalone processing");
     require(processor.applyPreset(assistPreset, PresetScope::multiband).wasOk()
             && processor.currentSettings().assist.enabled
+            && processor.currentSettings().assist.keepManual
             && processor.currentSettings().assist.profile == dsp::AssistProfile::music
             && near(processor.currentSettings().assist.focus, 72.0f)
             && near(processor.currentSettings().bands[1].dynamics.threshold, -36.0f), "Assist preset saves manual and Assist settings");

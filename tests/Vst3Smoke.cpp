@@ -110,6 +110,10 @@ int main(int argc, char** argv)
     set(*plugin, "5-Band Assist Focus", "68");
     const auto assisted = processConstant(*plugin, 180, 0.01f);
     require(assisted > 0.014f && assisted < 0.019f, "Assist replaces manual lift with a gentle cut without an editor");
+    parameter(*plugin, "5-Band Assist Keep Manual").setValueNotifyingHost(1.0f);
+    const auto assistAndManual = processConstant(*plugin, 180, 0.01f);
+    require(assistAndManual > 1.8f * assisted && assistAndManual < 0.03981f,
+            "Keep Manual retains lift and applies Assist after it");
     MemoryBlock saved;
     plugin->getStateInformation(saved);
     require(saved.getSize() > 0, "VST3 state block is empty");
@@ -124,6 +128,7 @@ int main(int argc, char** argv)
     require(parameter(*recalled, "RTA Pink Slope").getValue() > 0.99f, "Pink Slope failed to recall");
     require(parameter(*recalled, "5-Band Assist").getValue() > 0.99f
             && parameter(*recalled, "5-Band Assist Profile").getValue() > 0.99f
+            && parameter(*recalled, "5-Band Assist Keep Manual").getValue() > 0.99f
             && std::abs(parameter(*recalled, "5-Band Assist Focus").getValue() - 0.68f) < 0.001f,
             "Assist settings failed to recall");
     require(parameter(*recalled, "Compressor Mode").getValue() > 0.99f, "Compressor mode failed to recall");
@@ -135,7 +140,8 @@ int main(int argc, char** argv)
             "GEQ gain failed to recall");
     require(std::abs(parameter(*recalled, "GEQ Saturation").getValue() - 0.75f) < 0.001f
             && parameter(*recalled, "GEQ Position").getValue() > 0.99f, "saturation and GEQ position failed to recall");
-    require(std::abs(processConstant(*recalled, 180, 0.01f) - assisted) < 0.001f, "Recalled Assist changes the signal");
+    require(std::abs(processConstant(*recalled, 180, 0.01f) - assistAndManual) < 0.001f,
+            "Recalled Assist keeps the manual processing");
     parameter(*recalled, "5-Band Assist").setValueNotifyingHost(0.0f);
     require(processConstant(*recalled, 180) > 1.20f, "Restored VST3 state lost order or settings");
     require(std::abs(processConstant(*recalled, 180, 0.01f) - 0.03981f) < 0.001f, "Restored VST3 state lost band lift");
