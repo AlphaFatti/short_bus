@@ -681,7 +681,7 @@ void Editor::confirmStageReset()
     const auto title = "Reset " + String(stageNames[selectedTile]) + "?";
     const auto message = scope == PresetScope::rta
         ? "Restore the factory RTA settings and clear the captured reference?"
-        : "Restore the factory settings for this stage?";
+        : "Restore factory settings and turn this stage off?";
     auto* dialog = new AlertWindow(title, message, MessageBoxIconType::NoIcon, this);
     dialog->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey), KeyPress(KeyPress::returnKey));
     dialog->addButton("Reset", 1);
@@ -1012,14 +1012,14 @@ void Editor::resized()
     stageOn.setBounds(title.removeFromRight(72));
 
     auto options = content.withY(optionTop).withHeight(22);
-    auto tonalOptions = options.withTrimmedLeft(40);
-    targetChoice.setBounds(tonalOptions.removeFromLeft(102));
+    auto tonalOptions = options.withTrimmedLeft(38);
+    targetChoice.setBounds(tonalOptions.removeFromLeft(100));
     tonalOptions.removeFromLeft(4);
-    tonalMode.setBounds(tonalOptions.removeFromLeft(60));
+    tonalMode.setBounds(tonalOptions.removeFromLeft(73));
     tonalOptions.removeFromLeft(4);
-    captureReference.setBounds(tonalOptions.removeFromLeft(60));
+    captureReference.setBounds(tonalOptions.removeFromLeft(56));
     tonalOptions.removeFromLeft(4);
-    pinkSlope.setBounds(tonalOptions.removeFromLeft(84));
+    pinkSlope.setBounds(tonalOptions.removeFromLeft(78));
     rtaSensitivity.setBounds(options.withTrimmedLeft(options.getWidth() - 94).withY(optionTop - 2).withHeight(26));
     mode.setBounds(options.withWidth(167));
     assistButton.setBounds(options.removeFromRight(62));
