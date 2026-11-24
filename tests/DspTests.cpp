@@ -335,10 +335,30 @@ void tonalBalance()
         right[i] = -left[i];
     }
     const auto samples = static_cast<int>(left.size());
-    check(!tonalAboveFloor(left.data(), right.data(), samples, defaultRtaFloorDb, true),
+    const auto quiet = spectrumLevels(left.data(), right.data(), samples);
+    check(std::abs(dbFromGain(quiet.rms) + 76.0f) < 0.01f && std::abs(quiet.peak - quiet.rms) < 1.0e-8f,
+          "tap RMS and peak preserve opposite-polarity stereo audio");
+    check(!tonalAboveFloor(quiet, defaultRtaFloorDb, true),
           "idle noise closes an active analyzer");
-    check(tonalAboveFloor(left.data(), right.data(), samples, -85.0f, false),
+    check(tonalAboveFloor(quiet, -85.0f, false),
           "lowering the floor shows quiet stereo audio without phase cancellation");
+
+    // Ideal Hann-windowed magnitudes for a bin-centred tone with amplitude 0.5.
+    left.fill(0.0f);
+    left[255] = left[257] = fftSize / 16.0f;
+    left[256] = fftSize / 8.0f;
+    right = left;
+    const auto tone = tonalBandPower(left.data(), right.data(), fftSize, rate);
+    check(std::abs(tone[band] * hannPowerToMeanSquare - 0.125f) < 1.0e-6f, "RTA bands report calibrated RMS power");
+    for (std::size_t i = 1; i < left.size(); ++i)
+        left[i] = right[i] = 256.0f / std::sqrt(static_cast<float>(i));
+    const auto pink = tonalBandPower(left.data(), right.data(), fftSize, rate);
+    const auto matched = levelMatchedTone(pinkTonalTarget, pink, tonalBandCount);
+    check(std::abs(tonalEnergy(matched) - tonalEnergy(pink)) < 1.0e-6f, "pink reference matches in-band signal energy");
+    for (std::size_t i = 0; i < pink.size(); ++i)
+        check(std::abs(tonalDb(pink[i]) - tonalDb(matched[i])) < 0.2f, "pink noise is flat across equal log bands");
+    check(std::abs(toneDifferenceDb(1.0e-10f, 2.0e-10f) - toneDifferenceDb(0.01f, 0.02f)) < 0.001f,
+          "comparisons are level independent below the absolute display floor");
 
     left.fill(0.0f);
     right.fill(0.0f);
@@ -351,6 +371,64 @@ void tonalBalance()
     right[8192] = 4096.0f;
     check(geqBandPower(left.data(), right.data(), fftSize, 32000.0f).back() < 1.0e-9f,
           "GEQ RTA skips bands above Nyquist");
+}
+
+void assistedBands()
+{
+    struct Reading { BandLevels bands; float changeDb; };
+    const auto measure = [](float rate, float frequency, float amplitude, AssistProfile profile,
+                            float focus, bool enabled, int blockSize)
+    {
+        Multiband multiband;
+        multiband.prepare(rate);
+        Settings settings;
+        settings.multiEnabled = enabled;
+        settings.assist = { true, profile, focus };
+        settings.bands[0].lift = true;
+        settings.bands[0].dynamics.threshold = 0.0f;
+        float inputPower = 0.0f, outputPower = 0.0f;
+        const auto samples = static_cast<int>(rate);
+        const auto radiansPerSample = 6.28318530718f * frequency / rate;
+        for (int i = 0; i < samples; ++i)
+        {
+            if (i % blockSize == 0)
+                multiband.configure(settings);
+            const auto sample = amplitude * std::sin(radiansPerSample * static_cast<float>(i));
+            const Frame input { sample, -0.5f * sample };
+            const auto output = multiband.process(input);
+            check(std::abs(0.5f * output[0] + output[1]) < 1.0e-6f, "Assist is stereo linked");
+            if (!enabled || focus == 0.0f || amplitude < 0.001f)
+                check(output == input, "disabled, zero Focus or quiet Assist is neutral");
+            if (i >= samples / 2)
+            {
+                inputPower += input[0] * input[0];
+                outputPower += output[0] * output[0];
+            }
+        }
+        BandLevels bands {};
+        for (std::size_t i = 0; i < bands.size(); ++i)
+        {
+            bands[i] = multiband.meter(i);
+            check(bands[i] <= 0.001f && bands[i] >= -assistMaxCutDb - 0.001f, "Assist cuts are limited");
+        }
+        return Reading { bands, tonalDb(outputPower / inputPower) };
+    };
+    for (const auto rate : { 44100.0f, 48000.0f, 96000.0f })
+    {
+        const auto bass = measure(rate, 85.0f, 0.2f, AssistProfile::speech, 100.0f, true, 127);
+        const auto musicBass = measure(rate, 85.0f, 0.2f, AssistProfile::music, 100.0f, true, 513);
+        const auto lowMids = measure(rate, 190.0f, 0.2f, AssistProfile::speech, 100.0f, true, 127);
+        const auto treble = measure(rate, 10000.0f, 0.2f, AssistProfile::speech, 100.0f, true, 127);
+        check(bass.bands[0] < -2.0f && bass.changeDb < -1.0f, "Assist attenuates dominant bass");
+        check(musicBass.bands[0] > bass.bands[0] + 0.2f, "Music allows more bass than Speech");
+        check(lowMids.bands[1] < -1.0f && lowMids.bands[0] > -0.1f, "Assist distinguishes low mids from bass");
+        check(treble.bands[4] < -1.5f && treble.bands[2] > -0.1f, "Assist identifies excessive treble");
+        const auto half = measure(rate, 85.0f, 0.2f, AssistProfile::speech, 50.0f, true, 513);
+        check(std::abs(half.bands[0] - 0.5f * bass.bands[0]) < 0.002f, "Focus scales the cut across block sizes");
+    }
+    measure(48000.0f, 65.0f, 0.2f, AssistProfile::speech, 0.0f, true, 127);
+    measure(48000.0f, 65.0f, 0.2f, AssistProfile::speech, 100.0f, false, 127);
+    measure(48000.0f, 65.0f, 0.0004f, AssistProfile::speech, 100.0f, true, 127);
 }
 
 void graphicEq()
@@ -431,6 +509,7 @@ int main()
     peakCeiling();
     liveReorder();
     analyzerTap();
+    assistedBands();
     tonalBalance();
     graphicEq();
     std::cout << "Short Bus DSP checks passed\n";

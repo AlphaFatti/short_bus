@@ -16,6 +16,7 @@ public:
     void resized() override;
     void paint(juce::Graphics&) override;
     void mouseMove(const juce::MouseEvent&) override;
+    void mouseExit(const juce::MouseEvent&) override;
     void mouseDown(const juce::MouseEvent&) override;
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
@@ -100,6 +101,7 @@ private:
     void refreshSettings();
     void limitFrequencySlider(juce::Slider&, dsp::BandEdge);
     void refreshBandControls();
+    void confirmStageReset();
     float limitFrequency(std::size_t band, dsp::BandEdge, float requested) const;
     void animateLights();
     void moveStage(int direction);
@@ -124,6 +126,8 @@ private:
     juce::Rectangle<int> geqControls() const;
     juce::Rectangle<float> transferArea() const;
     juce::Rectangle<float> spectrumArea() const;
+    juce::Rectangle<float> tonalFineArea() const;
+    juce::Rectangle<int> stageControls() const;
     juce::Point<float> bandNode(int band) const;
     juce::Rectangle<float> bandRangeBar(int band) const;
     std::optional<int> bandAt(float x) const;
@@ -137,10 +141,11 @@ private:
     void drawSpectrum(juce::Graphics&, juce::Rectangle<float>);
     void drawTransfer(juce::Graphics&, juce::Rectangle<float>);
     void drawTonalBalance(juce::Graphics&, juce::Rectangle<float>);
+    void drawAssistControls(juce::Graphics&);
     void drawGraphicEq(juce::Graphics&);
     void drawMeterHistory(juce::Graphics&);
     void drawFineTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
-                      const dsp::TonalCurve& live, int count);
+                      const dsp::TonalCurve& live, int count, int inspectedBand, bool pink);
     void drawBroadTone(juce::Graphics&, juce::Rectangle<float>, const dsp::TonalCurve& target,
                        const dsp::TonalCurve& live, int count);
     float frequencyToX(float) const;
@@ -168,25 +173,28 @@ private:
     std::size_t selectedTile = 0;
     dsp::Stage selected = dsp::Stage::lowLevel;
     dsp::CompressorMode boundCompressorMode = dsp::CompressorMode::clean;
+    bool boundAssist = false;
     int selectedBand = 0;
     std::array<StageButton, tileCount> stages;
     std::array<juce::TextButton, dsp::bandCount> bands;
     BypassButton bypass;
     juce::TextButton stageOn { "Stage on" }, bandOn { "Band on" };
     juce::TextButton earlier { "<" }, later { ">" };
+    juce::TextButton resetStage { "Reset" };
+    juce::TextButton assistButton { "Assist" }, pinkSlope { "Pink Slope" };
     juce::TextButton captureReference { "Capture" };
     juce::TextButton flatEq { "Flat EQ" };
     juce::TextButton adaptiveRelease { "Auto release" };
-    juce::ComboBox mode, targetChoice, tonalMode, compressorModeBox;
-    juce::Slider rtaSensitivity, saturationDial;
+    juce::ComboBox mode, targetChoice, tonalMode, compressorModeBox, assistProfileBox;
+    juce::Slider rtaSensitivity, saturationDial, assistFocusDial;
     std::array<juce::Slider, dsp::geqBandCount> geqFaders;
     std::array<juce::Slider, controlCount> sliders;
     std::array<juce::Label, controlCount> labels;
     std::array<std::unique_ptr<SliderLink>, controlCount> sliderLinks;
     std::array<std::unique_ptr<SliderLink>, dsp::geqBandCount> geqLinks;
-    std::unique_ptr<SliderLink> sensitivityLink, saturationLink;
-    std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink, adaptiveReleaseLink;
-    std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink, compressorModeLink;
+    std::unique_ptr<SliderLink> sensitivityLink, saturationLink, assistFocusLink;
+    std::unique_ptr<ButtonLink> bypassLink, stageLink, bandLink, adaptiveReleaseLink, assistLink, pinkSlopeLink;
+    std::unique_ptr<ChoiceLink> modeLink, targetLink, tonalModeLink, compressorModeLink, assistProfileLink;
     std::optional<GraphDrag> graphDrag;
     std::optional<TileDrag> tileDrag;
     PresetButton presetsButton;
@@ -204,8 +212,10 @@ private:
                                                      juce::dsp::WindowingFunction<float>::hann, false };
     std::array<std::array<float, Processor::tonalFftSize * 2>, 2> tonalBuffer {};
     dsp::TonalCurve tonalAverage {};
+    dsp::SpectrumLevels tonalTapLevels;
+    int tonalHoverBand = -1;
     std::uint32_t tonalKey = 0;
-    double lastTonalFrame = 0.0;
+    double lastTonalFrame = 0.0, lastTonalLevelFrame = 0.0;
     std::array<float, dsp::geqBandCount> geqSpectrum {};
     std::uint32_t geqSpectrumKey = 0;
     double lastGeqFrame = 0.0;

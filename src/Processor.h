@@ -16,6 +16,9 @@ inline constexpr auto order = "strip_order";
 inline constexpr auto mode = "low_mode";
 inline constexpr auto low = "low";
 inline constexpr auto multi = "multi";
+inline constexpr auto multiAssist = "multi_assist";
+inline constexpr auto assistProfile = "multi_assist_profile";
+inline constexpr auto assistFocus = "multi_assist_focus";
 inline constexpr auto comp = "comp";
 inline constexpr auto limit = "limit";
 inline constexpr auto limitAdaptive = "limit_adaptive";
@@ -28,6 +31,7 @@ inline constexpr auto rtaPosition = "rta_position";
 inline constexpr auto rtaTarget = "rta_target";
 inline constexpr auto rtaView = "rta_view";
 inline constexpr auto rtaFloor = "rta_floor";
+inline constexpr auto rtaPink = "rta_pink_slope";
 inline constexpr auto rtaAfterGeq = "rack_rta_after_geq";
 inline constexpr auto compMode = "comp_mode";
 inline constexpr auto optoAttack = "comp_opto_attack";
@@ -97,6 +101,7 @@ public:
     void setTonalReference(std::optional<dsp::TonalReference>);
     juce::ValueTree presetState(PresetScope);
     juce::Result applyPreset(const juce::ValueTree&, PresetScope);
+    juce::Result resetStage(PresetScope);
     unsigned presetRecallSafes() const { return recallSafes.load(std::memory_order_relaxed); }
     void setPresetRecallSafes(unsigned mask) { recallSafes.store(mask & ((1u << presetSafeCount) - 1u), std::memory_order_relaxed); }
     dsp::Metering readMeters() const;
@@ -147,6 +152,7 @@ private:
     DynamicsRefs lowRefs {}, compRefs {};
     std::array<BandRefs, dsp::bandCount> bandRefs {};
     Atomic *mode = nullptr, *order = nullptr, *bypass = nullptr, *multiOn = nullptr;
+    Atomic *assistOn = nullptr, *assistProfile = nullptr, *assistFocus = nullptr;
     Atomic *rtaSlot = nullptr, *geqSlot = nullptr, *rtaAfterEq = nullptr;
     Atomic *compressorMode = nullptr, *optoAttack = nullptr, *optoRelease = nullptr;
     Atomic *fetAttack = nullptr, *fetRelease = nullptr;

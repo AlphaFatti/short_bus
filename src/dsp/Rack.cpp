@@ -117,7 +117,7 @@ void Rack::Chain::prepare(float rate, int delay)
     sampleRate = rate;
     lowLevel = {};
     compressor = {};
-    bands = {};
+    multiband.prepare(rate);
     stageMeters = {};
     limiter.prepare(rate, delay);
     geq.prepare(rate);
@@ -129,14 +129,7 @@ void Rack::Chain::configure(const Settings& settings)
     lowLevel.configure(sampleRate, settings.lowLevel,
         settings.lowMode == LowMode::expand ? Curve::expand : Curve::lift);
     compressor.configure(sampleRate, settings.compressor, settings.compressorMode, settings.optoTiming, settings.fetTiming);
-    const auto spans = orderedBandSpans(settings.bands, sampleRate);
-    for (std::size_t i = 0; i < bands.size(); ++i)
-    {
-        auto band = settings.bands[i];
-        band.lowHz = spans[i].low;
-        band.highHz = spans[i].high;
-        bands[i].configure(sampleRate, band, settings.multiEnabled);
-    }
+    multiband.configure(settings);
     limiter.configure(settings.limiter);
     geq.configure(settings.geq);
 }
@@ -151,13 +144,7 @@ Frame Rack::Chain::process(Frame input, int tap, Frame* tapped)
         switch (stage)
         {
             case Stage::lowLevel: input = lowLevel.process(input); break;
-            case Stage::multiband:
-            {
-                const auto detector = input;
-                for (auto& band : bands)
-                    input = band.process(detector, input);
-                break;
-            }
+            case Stage::multiband: input = multiband.process(input); break;
             case Stage::compressor: input = compressor.process(input); break;
             case Stage::limiter: input = limiter.process(input); break;
             case Stage::geq: input = geq.process(input); break;
@@ -177,9 +164,9 @@ Metering Rack::Chain::meters() const
     result.stages[index(Stage::compressor)].gainDb = compressor.meter();
     result.stages[index(Stage::limiter)].gainDb = limiter.meter();
     auto& strongest = result.stages[index(Stage::multiband)].gainDb;
-    for (std::size_t i = 0; i < bands.size(); ++i)
+    for (std::size_t i = 0; i < result.bands.size(); ++i)
     {
-        result.bands[i] = bands[i].meter();
+        result.bands[i] = multiband.meter(i);
         if (std::abs(result.bands[i]) > std::abs(strongest))
             strongest = result.bands[i];
     }

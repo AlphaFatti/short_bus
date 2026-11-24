@@ -5,13 +5,15 @@ Short Bus is a free, open-source VST3 mastering rack for a stereo mix bus. It pu
 | Stage | Controls |
 | --- | --- |
 | Expand / Lift | Downward expansion or upward compression below threshold, with a cap on the cut or lift |
-| 5-Band | Five independent bands with adjustable edges, threshold, ratio, attack, release, knee, and upward or downward compression |
+| 5-Band | Five editable bands with upward or downward compression, or adaptive cut-only Assist with Speech and Music profiles |
 | Compressor | Stereo-linked Clean, Opto or FET compression with knee, range and makeup gain |
 | GEQ | 31 faders from 20 Hz to 20 kHz, ±12 dB per band, and a saturation knob after the filters |
 | Limiter | Stereo-linked sample-peak limiting with a smooth 3 ms lookahead ramp, drive, ceiling, and fixed or adaptive release |
-| RTA | Movable, level-matched tonal balance analyzer with Fine and Broad views and an adjustable sensitivity floor |
+| RTA | Movable analyzer with tap peak and RMS, Fine and Broad views, an adjustable sensitivity floor and a Pink Slope reference |
 
 Select a stage card to edit its controls. Drag any of the six cards to a new position, or use the **Move** arrows. A drag previews the order and commits it on release. Click **Stage on** to engage that stage. Stage **IN** and **OUT** show stereo peaks just before and after that stage in the current order. The middle bar in Expand / Lift, Compressor, and Limiter shows the dynamics gain change. The 5-Band analyzer shows the stereo output of the whole rack, with the 5-Band input and output meters on its sides.
+
+**Reset** opens a confirmation for the selected stage. Confirm to restore that stage's factory settings, including its enable switch. Resetting the RTA also clears its captured reference.
 
 The blue dot on the Expand / Lift, Compressor, and Limiter curves follows the current input level. The strip below each graph shows the last four seconds with the newest readings at the right. It shows input and output in dBFS, with actual gain change on its own dB scale for the dynamics stages. In 5-Band, the gain trace follows the selected band. The RTA strip shows the level at its current tap.
 
@@ -23,9 +25,13 @@ In **Limiter**, **Auto release** lengthens recovery during sustained limiting. T
 
 In **5-Band**, click anywhere in a band to select it. Drag the circle up or down for threshold, the horizontal bar above zero to lift quiet audio or below zero to compress peaks, and the top edge tabs to resize the selected band. The bar sets the maximum gain change in dB. At zero, the band applies no gain change. The filters have gradual skirts, so a narrow band can apply less gain change at its center. The frequency sliders and typed values obey the same limits. Bands can meet at a boundary or leave gaps. Previously overlapping spans are trimmed at the neighboring band start.
 
+To try **Assist**, enable 5-Band, turn on **Assist**, and choose **Speech** for spoken word or **Music** for the full band. Assist uses five fixed bands, watches for an excessive share of energy in a band, and shows the cut it applies to each band. **Focus** ranges from unity at 0% to cuts of up to 3 dB per band at 100%. The effect releases during quiet gaps. Turn Assist off to return to your manual settings.
+
 In **GEQ**, move each fader to cut or boost its frequency. Double-click a fader to center it or use **Flat EQ** to center the whole bank. **Saturation** sets how strongly the stage rounds peaks after the filters. The blue RTA bars show the signal after the GEQ and saturation, using the dBFS scale at the right. The RTA Sensitivity floor applies here too. Bands at or above Nyquist are dimmed at lower sample rates.
 
-Select the **RTA** tile and use **Move** to check the rack input, output, or the signal between two stages. **Sensitivity** sets the RMS floor for display and capture. Raise it above your idle noise level to quiet the trace. **Fine** shows the averaged spectrum against a target range. **Broad** compares lows, low mids, high mids, and highs in dB. The Balanced, Bass-forward, and Speech profiles are starting points. Play audio and press **Capture** to save the average at the current tap, then move the RTA to compare another point against it. The sensitivity, target, view, captured reference, and tap position recall with the project.
+Select the **RTA** tile and use **Move** to check the rack input, output, or the signal between two stages. The display shows peak and RMS at the tap in dBFS. **Sensitivity** sets the RMS floor for the spectrum and capture. Raise it above your idle noise level to quiet the trace. **Fine** shows per-band RMS and a level-matched target range. Hover over a band to see its frequency span, level and dB difference from the target. **Broad** shows this difference across four wider regions.
+
+Turn on **Pink Slope** to compare against pink noise at the same in-band energy. The reference is level across the equally spaced log-frequency bands because each covers the same fraction of an octave. With Pink Slope off, choose Balanced, Bass-forward, or Speech, or press **Capture** while playing audio to save your own target. Move the RTA to another point to compare against that capture.
 
 The **PRESETS** license plate opens the bus door. The upper window saves and recalls the selected unit. The lower **Bus Presets** window saves the whole rack, including its order, RTA position and captured reference. Select an entry and press **Load**, or double-click it. **Safes** chooses which sections keep their current settings during Bus recall. Bypass is safe by default, and safe choices recall with the host project.
 

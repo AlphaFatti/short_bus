@@ -117,18 +117,29 @@ public:
 
     Frame process(Frame detectorInput, Frame signal)
     {
+        return applyGain(signal, manualGain(detect(detectorInput)));
+    }
+
+    float detect(Frame input)
+    {
         low.tick(edgeSlew);
         high.tick(edgeSlew);
         Frame isolated {};
-        for (std::size_t channel = 0; channel < signal.size(); ++channel)
+        for (std::size_t channel = 0; channel < input.size(); ++channel)
         {
-            const auto input = detectorInput[channel];
-            const auto highPassed = input - low.mix * detectorLow[channel].lowpass(input, low.coefficient);
+            const auto sample = input[channel];
+            const auto highPassed = sample - low.mix * detectorLow[channel].lowpass(sample, low.coefficient);
             const auto lowPassed = detectorHigh[channel].lowpass(highPassed, high.coefficient);
             isolated[channel] = highPassed + high.mix * (lowPassed - highPassed);
         }
+        return peak(isolated);
+    }
 
-        const auto db = envelope.tick(peak(isolated));
+    float manualGain(float detectorPeak) { return envelope.tick(detectorPeak); }
+
+    Frame applyGain(Frame signal, float db)
+    {
+        appliedDb = db;
         // The matched shelves restore unity away from the band and at zero gain change.
         const auto rootGain = std::abs(db) > 0.0f ? gainFromDb(0.5f * db) : 1.0f;
         const auto inverse = 1.0f / rootGain;
@@ -148,7 +159,7 @@ public:
         return signal;
     }
 
-    float meter() const { return envelope.current(); }
+    float meter() const { return appliedDb; }
 
 private:
     struct Edge
@@ -176,7 +187,7 @@ private:
     GainEnvelope envelope;
     Edge low, high;
     std::array<OnePole, 2> detectorLow {}, detectorHigh {}, shelfLow {}, shelfHigh {}, lowOnly {};
-    float edgeSlew = 1.0f;
+    float edgeSlew = 1.0f, appliedDb = 0.0f;
 };
 
 } // namespace shortbus::dsp

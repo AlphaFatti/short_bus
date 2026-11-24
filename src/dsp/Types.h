@@ -14,6 +14,7 @@ using Frame = std::array<float, 2>;
 enum class Stage : std::uint8_t { lowLevel, multiband, compressor, limiter, geq };
 enum class LowMode : std::uint8_t { expand, lift };
 enum class CompressorMode : std::uint8_t { clean, opto, fet };
+enum class AssistProfile : std::uint8_t { speech, music };
 
 struct CompressorTiming { float attack; float release; };
 constexpr CompressorTiming optoTimingDefaults { 10.0f, 60.0f };
@@ -153,6 +154,16 @@ constexpr std::array<BandSettings, bandCount> bandDefaults {{
     {1500.0f, 5500.0f}, {5500.0f, 20000.0f}
 }};
 
+constexpr float defaultAssistFocus = 45.0f;
+constexpr float assistMaxCutDb = 3.0f;
+
+struct AssistSettings
+{
+    bool enabled = false;
+    AssistProfile profile = AssistProfile::speech;
+    float focus = defaultAssistFocus;
+};
+
 struct LimiterSettings
 {
     bool enabled = false;
@@ -175,6 +186,7 @@ struct Settings
     LowMode lowMode = LowMode::expand;
     bool multiEnabled = false;
     std::array<BandSettings, bandCount> bands = bandDefaults;
+    AssistSettings assist;
     DynamicsSettings compressor = compDefaults;
     CompressorMode compressorMode = CompressorMode::clean;
     CompressorTiming optoTiming = optoTimingDefaults;
