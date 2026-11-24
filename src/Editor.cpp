@@ -504,6 +504,11 @@ Editor::Editor(Processor& owner)
     assistButton.setTooltip("Use automatic, cut-only dynamics. Turn Assist off to return to your manual bands.");
     addChildComponent(assistButton);
     assistLink = std::make_unique<ButtonLink>(processor.state, param::multiAssist, assistButton);
+    style(keepManualButton, true);
+    keepManualButton.setTitle("Keep manual 5-Band processing");
+    keepManualButton.setTooltip("Apply Assist after your manual bands. The meters in this view show Assist's cuts.");
+    addChildComponent(keepManualButton);
+    keepManualLink = std::make_unique<ButtonLink>(processor.state, param::assistKeepManual, keepManualButton);
     style(pinkSlope, true);
     pinkSlope.setTitle("Pink Slope");
     pinkSlope.setTooltip("Compare with level-matched pink noise. Turn off to use a preset or captured target.");
@@ -595,7 +600,7 @@ Editor::Editor(Processor& owner)
     saturationDial.setDoubleClickReturnValue(true, 0.0);
     saturationLink = std::make_unique<SliderLink>(processor.state, param::saturation, saturationDial);
     assistFocusDial.setTitle("Assist Focus");
-    assistFocusDial.setTooltip("Sets how much Assist can cut. At 0%, Assist passes audio through.");
+    assistFocusDial.setTooltip("Sets how much Assist can cut. At 0%, Assist applies zero gain change.");
     assistFocusDial.setTextValueSuffix(" %");
     assistFocusDial.setDoubleClickReturnValue(true, dsp::defaultAssistFocus);
     assistFocusLink = std::make_unique<SliderLink>(processor.state, param::assistFocus, assistFocusDial);
@@ -727,6 +732,7 @@ void Editor::bindControls()
     assistButton.setVisible(isMulti);
     assistProfileBox.setVisible(assisting);
     assistFocusDial.setVisible(assisting);
+    keepManualButton.setVisible(assisting);
     const auto isGeq = geqSelected();
     saturationDial.setVisible(isGeq);
     flatEq.setVisible(isGeq);
@@ -1031,6 +1037,8 @@ void Editor::resized()
     auto controls = stageControls();
     assistProfileBox.setBounds(controls.getX() + 48, controls.getY() + 4, 94, 24);
     assistFocusDial.setBounds(controls.getX() + 201, controls.getY(), 95, 32);
+    keepManualButton.setBounds(controls.withTrimmedLeft(controls.getWidth() - 100)
+                                  .withHeight(sliderRowHeight).withSizeKeepingCentre(100, 24));
     for (std::size_t row = 0; row < 2; ++row)
     {
         auto line = controls.removeFromTop(sliderRowHeight);
@@ -1341,9 +1349,10 @@ void Editor::drawAssistControls(Graphics& g)
     const auto options = area.removeFromTop(sliderRowHeight);
     label(g, theme.font(10.5f, true), "PROFILE", options.withWidth(46), muted);
     label(g, theme.font(10.5f, true), "FOCUS", options.withX(assistProfileBox.getRight() + 17).withWidth(42), muted);
-    const auto limit = dsp::assistMaxCutDb * settings.assist.focus * 0.01f;
-    const auto caption = settings.multiEnabled ? "Up to " + String(limit, 1) + " dB cut per band" : String("Stage off");
-    label(g, theme.font(10.5f), caption, options.withLeft(assistFocusDial.getRight() + 10), muted);
+    const auto limit = dsp::assistCutLimit(settings.assist.profile) * settings.assist.focus * 0.01f;
+    const auto captionBounds = options.withLeft(assistFocusDial.getRight() + 6).withRight(keepManualButton.getX() - 6);
+    const auto caption = settings.multiEnabled ? "Max cut " + String(limit, 1) + " dB" : String("Stage off");
+    label(g, theme.font(10.5f), caption, captionBounds, muted);
     for (std::size_t i = 0; i < dsp::bandCount; ++i)
     {
         const auto cell = area.removeFromLeft(area.getWidth() / static_cast<int>(dsp::bandCount - i));
@@ -1432,7 +1441,11 @@ void Editor::drawMeterHistory(Graphics& g)
     if (!tapView)
         label(g, legendFont, "OUT dBFS", legend.removeFromLeft(68), outputColour);
     if (showGain)
-        label(g, legendFont, bandView ? "BAND " + String(selectedBand + 1) + " GAIN dB" : "GAIN dB", legend, gainColour);
+    {
+        const auto bandLabel = boundAssist ? String(assistBandNames[band]).toUpperCase() + " ASSIST dB"
+                                          : "BAND " + String(selectedBand + 1) + " GAIN dB";
+        label(g, legendFont, bandView ? bandLabel : String("GAIN dB"), legend, gainColour);
+    }
 
     const auto area = bounds.reduced(27.0f, 0.0f).withTrimmedTop(15.0f).withTrimmedBottom(13.0f);
     for (int second = 0; second <= Processor::historySeconds; ++second)

@@ -36,7 +36,7 @@ void restoreMissingPresetParameters(AudioProcessorValueTreeState& state, ValueTr
         for (const auto* id : compressorCharacterParameters)
             restoreMissingParameter(state, restored, id);
     if (scope == PresetScope::bus || scope == PresetScope::multiband)
-        for (const auto* id : { param::multiAssist, param::assistProfile, param::assistFocus })
+        for (const auto* id : { param::multiAssist, param::assistProfile, param::assistFocus, param::assistKeepManual })
             restoreMissingParameter(state, restored, id);
     if (scope == PresetScope::bus || scope == PresetScope::rta)
         for (const auto* id : { param::rtaFloor, param::rtaPink })
@@ -192,6 +192,7 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
         StringArray { "Speech", "Music" }, 0));
     addFloat(layout, param::assistFocus, "5-Band Assist Focus", { 0.0f, 100.0f, 1.0f }, dsp::defaultAssistFocus);
     addToggle(layout, param::rtaPink, "RTA Pink Slope", false);
+    addToggle(layout, param::assistKeepManual, "5-Band Assist Keep Manual", false);
     return layout;
 }
 
@@ -227,6 +228,7 @@ Processor::Processor()
     assistOn = state.getRawParameterValue(param::multiAssist);
     assistProfile = state.getRawParameterValue(param::assistProfile);
     assistFocus = state.getRawParameterValue(param::assistFocus);
+    keepManual = state.getRawParameterValue(param::assistKeepManual);
     limitOn = state.getRawParameterValue(param::id(param::limit, "enabled"));
     ceiling = state.getRawParameterValue(param::id(param::limit, "ceiling"));
     drive = state.getRawParameterValue(param::id(param::limit, "drive"));
@@ -266,7 +268,7 @@ dsp::Settings Processor::currentSettings() const
     settings.multiEnabled = read(multiOn) > 0.5f;
     settings.assist = { read(assistOn) > 0.5f,
                         read(assistProfile) > 0.5f ? dsp::AssistProfile::music : dsp::AssistProfile::speech,
-                        read(assistFocus) };
+                        read(assistFocus), read(keepManual) > 0.5f };
     for (std::size_t i = 0; i < bandRefs.size(); ++i)
     {
         const auto& refs = bandRefs[i];
