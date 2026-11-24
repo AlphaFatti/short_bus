@@ -9,19 +9,32 @@ namespace shortbus::dsp
 constexpr int tonalBandCount = 30;
 using TonalCurve = std::array<float, tonalBandCount>;
 constexpr float defaultRtaFloorDb = -65.0f;
+// Convert the positive-frequency power of a Hann-windowed FFT to mean square.
+constexpr float hannPowerToMeanSquare = 16.0f / 3.0f;
 
-inline bool tonalAboveFloor(const float* left, const float* right, int samples, float floorDb, bool active)
+struct SpectrumLevels { float rms = 0.0f; float peak = 0.0f; };
+
+inline SpectrumLevels spectrumLevels(const float* left, const float* right, int samples)
 {
+    SpectrumLevels result;
     double power = 0.0;
     for (int i = 0; i < samples; ++i)
     {
         const auto l = static_cast<double>(left[i]);
         const auto r = static_cast<double>(right[i]);
         power += l * l + r * r;
+        result.peak = std::max(result.peak, peak({ left[i], right[i] }));
     }
+    if (samples > 0 && std::isfinite(power))
+        result.rms = static_cast<float>(std::sqrt(power / (2.0 * samples)));
+    return result;
+}
+
+inline bool tonalAboveFloor(SpectrumLevels levels, float floorDb, bool active)
+{
     // Require a little more level to open than to keep displaying the current signal.
     const auto minimum = gainFromDb(floorDb + (active ? 0.0f : 3.0f));
-    return samples > 0 && std::isfinite(power) && power >= 2.0 * samples * minimum * minimum;
+    return levels.rms >= minimum;
 }
 
 struct TonalReference
@@ -115,6 +128,29 @@ inline TonalCurve normalizedTone(TonalCurve power, int bands = tonalBandCount)
 }
 
 inline float tonalDb(float power) { return 10.0f * std::log10(std::max(1.0e-9f, power)); }
+
+inline float toneDifferenceDb(float live, float target)
+{
+    const auto scale = std::max(live, target);
+    return scale > 0.0f ? tonalDb(live / scale) - tonalDb(target / scale) : 0.0f;
+}
+
+inline const auto pinkTonalTarget = []
+{
+    // Equal log-frequency bands each contain the same power for a 1/f spectrum.
+    TonalCurve power {};
+    power.fill(1.0f);
+    return power;
+}();
+
+inline TonalCurve levelMatchedTone(TonalCurve target, const TonalCurve& live, int bands)
+{
+    target = normalizedTone(target, bands);
+    const auto total = tonalEnergy(live, 0, bands);
+    for (auto& value : target)
+        value *= total;
+    return target;
+}
 
 inline const auto tonalTargets = []
 {

@@ -63,6 +63,7 @@ constexpr std::array<const char*, dsp::stageCount + 1> stageNames {
 constexpr std::array<const char*, dsp::stageCount> inspectorNames {
     "Low-level dynamics", "5-band compressor", "Bus compressor", "Lookahead limiter", "31-band graphic EQ"
 };
+constexpr std::array assistBandNames { "Bass", "Low mids", "Mids", "Presence", "Treble" };
 
 struct Control { const char* id; const char* label; };
 constexpr std::array dynamicsControls {
@@ -90,6 +91,21 @@ String eqFrequency(float hz)
     if (hz < 1000.0f)
         return String(hz, std::floor(hz) < hz ? 1 : 0);
     return String(hz / 1000.0f, 2).trimCharactersAtEnd("0").trimCharactersAtEnd(".") + "k";
+}
+
+String frequencySpan(float low, float high)
+{
+    const auto separator = String::charToString(0x2013);
+    if (high < 1000.0f)
+        return String(roundToInt(low)) + separator + String(roundToInt(high)) + " Hz";
+    const auto formatKHz = [](float hz) { return eqFrequency(hz).trimCharactersAtEnd("k"); };
+    const auto start = low < 1000.0f ? String(roundToInt(low)) + " Hz" : formatKHz(low);
+    return start + separator + formatKHz(high) + " kHz";
+}
+
+String levelReadout(float gain)
+{
+    return gain > 0.0f ? String(dsp::dbFromGain(gain), 1) : "-inf";
 }
 
 String fontKey(const String& family)
@@ -479,6 +495,20 @@ Editor::Editor(Processor& owner)
         style(*button, button != &earlier && button != &later);
         addAndMakeVisible(*button);
     }
+    style(resetStage);
+    resetStage.setTitle("Reset the selected stage");
+    resetStage.onClick = [this] { confirmStageReset(); };
+    addAndMakeVisible(resetStage);
+    style(assistButton, true);
+    assistButton.setTitle("5-Band Assist");
+    assistButton.setTooltip("Use automatic, cut-only dynamics. Turn Assist off to return to your manual bands.");
+    addChildComponent(assistButton);
+    assistLink = std::make_unique<ButtonLink>(processor.state, param::multiAssist, assistButton);
+    style(pinkSlope, true);
+    pinkSlope.setTitle("Pink Slope");
+    pinkSlope.setTooltip("Compare with level-matched pink noise. Turn off to use a preset or captured target.");
+    addChildComponent(pinkSlope);
+    pinkSlopeLink = std::make_unique<ButtonLink>(processor.state, param::rtaPink, pinkSlope);
     earlier.setTitle("Move selected tile earlier");
     later.setTitle("Move selected tile later");
     earlier.onClick = [this] { moveStage(-1); };
@@ -486,9 +516,10 @@ Editor::Editor(Processor& owner)
     mode.setTitle("Low-level mode");
     targetChoice.setTitle("Tonal balance target");
     tonalMode.setTitle("Tonal balance view");
+    assistProfileBox.setTitle("Assist profile");
     compressorModeBox.setTitle("Compressor mode");
     compressorModeBox.setTooltip("Clean uses the original peak compressor. Opto has RMS sensing and optical memory. FET has fast feedback compression.");
-    for (auto* choice : { &mode, &targetChoice, &tonalMode, &compressorModeBox })
+    for (auto* choice : { &mode, &targetChoice, &tonalMode, &compressorModeBox, &assistProfileBox })
     {
         choice->setColour(ComboBox::backgroundColourId, panel);
         choice->setColour(ComboBox::textColourId, white);
@@ -500,12 +531,13 @@ Editor::Editor(Processor& owner)
     targetChoice.addItemList({ "Balanced", "Bass-forward", "Speech", "Captured" }, 1);
     tonalMode.addItemList({ "Fine", "Broad" }, 1);
     compressorModeBox.addItemList({ "Clean", "Opto", "FET" }, 1);
+    assistProfileBox.addItemList({ "Speech", "Music" }, 1);
     style(captureReference);
     captureReference.setTitle("Capture the average at this tap");
     captureReference.setEnabled(false);
     captureReference.onClick = [this]
     {
-        if (lastTonalFrame <= 0.0 || tonalKey != currentTonalKey())
+        if (pinkSlope.getToggleState() || lastTonalFrame <= 0.0 || tonalKey != currentTonalKey())
             return;
         const auto count = dsp::tonalBandsAtRate(processor.displayRate());
         processor.setTonalReference(dsp::TonalReference { dsp::normalizedTone(tonalAverage, count), count });
@@ -522,6 +554,7 @@ Editor::Editor(Processor& owner)
     targetLink = std::make_unique<ChoiceLink>(processor.state, param::rtaTarget, targetChoice);
     tonalModeLink = std::make_unique<ChoiceLink>(processor.state, param::rtaView, tonalMode);
     compressorModeLink = std::make_unique<ChoiceLink>(processor.state, param::compMode, compressorModeBox);
+    assistProfileLink = std::make_unique<ChoiceLink>(processor.state, param::assistProfile, assistProfileBox);
     bypassLink = std::make_unique<ButtonLink>(processor.state, param::bypass, bypass);
     for (std::size_t i = 0; i < sliders.size(); ++i)
     {
@@ -539,7 +572,7 @@ Editor::Editor(Processor& owner)
         addChildComponent(slider);
         addChildComponent(labels[i]);
     }
-    for (auto* dial : { &rtaSensitivity, &saturationDial })
+    for (auto* dial : { &rtaSensitivity, &saturationDial, &assistFocusDial })
     {
         dial->setSliderStyle(Slider::RotaryHorizontalVerticalDrag);
         dial->setTextBoxStyle(Slider::TextBoxRight, false, 54, 22);
@@ -561,6 +594,11 @@ Editor::Editor(Processor& owner)
     saturationDial.setTextValueSuffix(" %");
     saturationDial.setDoubleClickReturnValue(true, 0.0);
     saturationLink = std::make_unique<SliderLink>(processor.state, param::saturation, saturationDial);
+    assistFocusDial.setTitle("Assist Focus");
+    assistFocusDial.setTooltip("Sets how much Assist can cut. At 0%, Assist passes audio through.");
+    assistFocusDial.setTextValueSuffix(" %");
+    assistFocusDial.setDoubleClickReturnValue(true, dsp::defaultAssistFocus);
+    assistFocusLink = std::make_unique<SliderLink>(processor.state, param::assistFocus, assistFocusDial);
     for (std::size_t i = 0; i < geqFaders.size(); ++i)
     {
         auto& fader = geqFaders[i];
@@ -615,6 +653,8 @@ void Editor::selectTile(std::size_t tile)
     processor.spectrumRequested.store(spectrum, std::memory_order_relaxed);
     tonalKey = 0;
     lastTonalFrame = 0.0;
+    lastTonalLevelFrame = 0.0;
+    tonalHoverBand = -1;
     geqSpectrumKey = 0;
     lastGeqFrame = 0.0;
     geqSpectrum.fill(geqRtaMinDb);
@@ -635,6 +675,40 @@ PresetScope Editor::presetScope() const
     return static_cast<PresetScope>(dsp::index(selected));
 }
 
+void Editor::confirmStageReset()
+{
+    const auto scope = presetScope();
+    const auto title = "Reset " + String(stageNames[selectedTile]) + "?";
+    const auto message = scope == PresetScope::rta
+        ? "Restore the factory RTA settings and clear the captured reference?"
+        : "Restore the factory settings for this stage?";
+    auto* dialog = new AlertWindow(title, message, MessageBoxIconType::NoIcon, this);
+    dialog->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey), KeyPress(KeyPress::returnKey));
+    dialog->addButton("Reset", 1);
+    const Component::SafePointer<Editor> safe(this);
+    dialog->enterModalState(true, ModalCallbackFunction::create([safe, scope](int result)
+    {
+        if (result != 1 || safe == nullptr)
+            return;
+        const auto status = safe->processor.resetStage(scope);
+        if (status.failed())
+        {
+            AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Reset stage",
+                                             status.getErrorMessage(), "OK", safe.getComponent());
+            return;
+        }
+        if (scope == PresetScope::rta)
+        {
+            safe->lastTonalFrame = 0.0;
+            safe->lastTonalLevelFrame = 0.0;
+            safe->captureReference.setEnabled(false);
+            if (safe->tonalSelected())
+                safe->processor.discardSpectrum();
+        }
+        safe->bindControls();
+    }), true);
+}
+
 void Editor::bindControls()
 {
     finishGraphDrag();
@@ -642,12 +716,17 @@ void Editor::bindControls()
     refreshSettings();
     const auto isTonal = tonalSelected();
     boundCompressorMode = settings.compressorMode;
+    boundAssist = settings.assist.enabled;
     const auto isMulti = !isTonal && selected == Stage::multiband;
+    const auto assisting = isMulti && boundAssist;
     compressorModeBox.setVisible(!isTonal && selected == Stage::compressor);
     adaptiveRelease.setVisible(!isTonal && selected == Stage::limiter);
     mode.setVisible(!isTonal && selected == Stage::lowLevel);
-    for (auto* control : std::array<Component*, 4> { &targetChoice, &tonalMode, &captureReference, &rtaSensitivity })
+    for (auto* control : std::array<Component*, 5> { &targetChoice, &tonalMode, &captureReference, &rtaSensitivity, &pinkSlope })
         control->setVisible(isTonal);
+    assistButton.setVisible(isMulti);
+    assistProfileBox.setVisible(assisting);
+    assistFocusDial.setVisible(assisting);
     const auto isGeq = geqSelected();
     saturationDial.setVisible(isGeq);
     flatEq.setVisible(isGeq);
@@ -660,12 +739,13 @@ void Editor::bindControls()
     if (!isTonal)
         stageLink = std::make_unique<ButtonLink>(processor.state, param::id(stagePrefix, "enabled"), stageOn);
     bandLink.reset();
-    bandOn.setVisible(isMulti);
-    if (isMulti)
+    bandOn.setVisible(isMulti && !assisting);
+    if (isMulti && !assisting)
         bandLink = std::make_unique<ButtonLink>(processor.state, param::id(bandPrefix, "enabled"), bandOn);
     for (std::size_t i = 0; i < bands.size(); ++i)
     {
         bands[i].setVisible(isMulti);
+        bands[i].setButtonText(assisting ? String(assistBandNames[i]) : "Band " + String(static_cast<int>(i + 1)));
         bands[i].setToggleState(i == static_cast<std::size_t>(selectedBand), dontSendNotification);
     }
     for (std::size_t i = 0; i < sliders.size(); ++i)
@@ -674,7 +754,7 @@ void Editor::bindControls()
         sliders[i].setVisible(false);
         labels[i].setVisible(false);
     }
-    if (isTonal || isGeq)
+    if (isTonal || isGeq || assisting)
     {
         resized();
         repaint();
@@ -725,7 +805,8 @@ void Editor::bindControls()
 void Editor::refreshSettings()
 {
     settings = processor.currentSettings();
-    bandSpans = dsp::orderedBandSpans(settings.bands, processor.displayRate());
+    const auto& displayedBands = settings.assist.enabled ? dsp::bandDefaults : settings.bands;
+    bandSpans = dsp::orderedBandSpans(displayedBands, processor.displayRate());
 }
 
 float Editor::limitFrequency(std::size_t band, dsp::BandEdge bandEdge, float requested) const
@@ -926,23 +1007,30 @@ void Editor::resized()
     title.removeFromRight(3);
     earlier.setBounds(title.removeFromRight(27));
     title.removeFromRight(45);
+    resetStage.setBounds(title.removeFromRight(56));
+    title.removeFromRight(6);
     stageOn.setBounds(title.removeFromRight(72));
 
     auto options = content.withY(optionTop).withHeight(22);
-    auto tonalOptions = options.withTrimmedLeft(46);
-    targetChoice.setBounds(tonalOptions.removeFromLeft(118));
-    tonalOptions.removeFromLeft(6);
-    tonalMode.setBounds(tonalOptions.removeFromLeft(67));
-    tonalOptions.removeFromLeft(6);
-    captureReference.setBounds(tonalOptions.removeFromLeft(82));
-    rtaSensitivity.setBounds(tonalOptions.removeFromRight(94).withY(optionTop - 2).withHeight(26));
+    auto tonalOptions = options.withTrimmedLeft(40);
+    targetChoice.setBounds(tonalOptions.removeFromLeft(102));
+    tonalOptions.removeFromLeft(4);
+    tonalMode.setBounds(tonalOptions.removeFromLeft(60));
+    tonalOptions.removeFromLeft(4);
+    captureReference.setBounds(tonalOptions.removeFromLeft(60));
+    tonalOptions.removeFromLeft(4);
+    pinkSlope.setBounds(tonalOptions.removeFromLeft(84));
+    rtaSensitivity.setBounds(options.withTrimmedLeft(options.getWidth() - 94).withY(optionTop - 2).withHeight(26));
     mode.setBounds(options.withWidth(167));
+    assistButton.setBounds(options.removeFromRight(62));
+    options.removeFromRight(6);
     bandOn.setBounds(options.removeFromRight(72));
     for (auto& band : bands)
-        band.setBounds(options.removeFromLeft(59).withTrimmedRight(4));
+        band.setBounds(options.removeFromLeft(boundAssist ? 67 : 59).withTrimmedRight(4));
 
-    const auto controlsTop = getHeight() - sliderRowsBottom - sliderRowHeight * 2;
-    auto controls = content.withY(controlsTop).withHeight(sliderRowHeight * 2);
+    auto controls = stageControls();
+    assistProfileBox.setBounds(controls.getX() + 48, controls.getY() + 4, 94, 24);
+    assistFocusDial.setBounds(controls.getX() + 201, controls.getY(), 95, 32);
     for (std::size_t row = 0; row < 2; ++row)
     {
         auto line = controls.removeFromTop(sliderRowHeight);
@@ -1006,6 +1094,18 @@ Rectangle<float> Editor::transferArea() const
 Rectangle<float> Editor::spectrumArea() const
 {
     return plot().reduced(spectrumSideWidth, 0.0f).withTrimmedBottom(19.0f).withTrimmedTop(17.0f);
+}
+
+Rectangle<float> Editor::tonalFineArea() const
+{
+    return plot().withTrimmedLeft(37.0f).withTrimmedRight(16.0f)
+        .withTrimmedTop(21.0f).withTrimmedBottom(23.0f);
+}
+
+Rectangle<int> Editor::stageControls() const
+{
+    const auto top = getHeight() - sliderRowsBottom - sliderRowHeight * 2;
+    return busBounds().reduced(controlInset, 0).withY(top).withHeight(sliderRowHeight * 2);
 }
 
 void Editor::drawBus(Graphics& g)
@@ -1151,22 +1251,31 @@ void Editor::drawHeader(Graphics& g)
             : tap == 0 ? String("Rack input") : tap == dsp::stageCount ? String("Rack output")
             : "After " + String(stageNames[dsp::index(route[static_cast<std::size_t>(tap - 1)])]);
         label(g, theme.font(11.5f, true), source,
-              { controlInset + 122, inspectorTop, earlier.getX() - controlInset - 170, 24 }, bandColours[1]);
-        label(g, theme.font(10.5f, true), "TARGET", { controlInset, optionTop, 42, 22 }, muted);
-        label(g, theme.font(10.5f, true), "SENSITIVITY",
-              { rtaSensitivity.getX() - 67, optionTop, 63, 22 }, muted, Justification::centredRight);
+              { controlInset + 122, inspectorTop, resetStage.getX() - controlInset - 130, 24 }, bandColours[1]);
+        label(g, theme.font(10.0f, true), "TARGET", { controlInset, optionTop, 38, 22 },
+              pinkSlope.getToggleState() ? muted.darker(0.45f) : muted);
+        const auto space = rtaSensitivity.getX() - pinkSlope.getRight() - 5;
+        if (space >= 28)
+            label(g, theme.font(10.5f, true), space >= 63 ? "SENSITIVITY" : "FLOOR",
+                  { pinkSlope.getRight(), optionTop, space, 22 }, muted, Justification::centredRight);
     }
     else if (selected == Stage::multiband)
     {
         const auto band = static_cast<std::size_t>(selectedBand);
         const auto readout = Rectangle<int>::leftTopRightBottom(controlInset + 155, inspectorTop,
                                                                 stageOn.getX() - 8, inspectorTop + 24);
-        label(g, theme.font(10.5f, true), "Range " + signedDb(signedRange(settings.bands[band]))
-              + "  /  Live " + signedDb(meters.bands[band]), readout, bandColours[band]);
+        if (!boundAssist)
+        {
+            const auto live = "Live " + signedDb(meters.bands[band]);
+            const auto value = readout.getWidth() >= 155 ? "Range " + signedDb(signedRange(settings.bands[band]))
+                                                        + "  /  " + live : live;
+            label(g, theme.font(10.5f, true), value, readout, bandColours[band]);
+        }
         const auto x = bands.back().getRight() + 7;
-        const auto width = bandOn.getX() - x - 7;
+        const auto width = (boundAssist ? assistButton.getX() : bandOn.getX()) - x - 7;
         const auto* hint = width >= 160 ? "Click band  /  Drag range bar" : "Click band to select";
-        label(g, theme.font(10.5f), hint, { x, optionTop, width, 22 }, muted);
+        if (width >= 104)
+            label(g, theme.font(10.5f), boundAssist ? "Click band to select" : hint, { x, optionTop, width, 22 }, muted);
     }
     else if (geqSelected())
     {
@@ -1213,13 +1322,40 @@ void Editor::paint(Graphics& g)
     if (tonalSelected())
         drawTonalBalance(g, bounds);
     else if (selected == Stage::multiband)
+    {
         drawSpectrum(g, bounds);
+        if (boundAssist)
+            drawAssistControls(g);
+    }
     else if (geqSelected())
         drawGraphicEq(g);
     else
         drawTransfer(g, bounds);
     drawMeterHistory(g);
     drawBumper(g);
+}
+
+void Editor::drawAssistControls(Graphics& g)
+{
+    auto area = stageControls();
+    const auto options = area.removeFromTop(sliderRowHeight);
+    label(g, theme.font(10.5f, true), "PROFILE", options.withWidth(46), muted);
+    label(g, theme.font(10.5f, true), "FOCUS", options.withX(assistProfileBox.getRight() + 17).withWidth(42), muted);
+    const auto limit = dsp::assistMaxCutDb * settings.assist.focus * 0.01f;
+    const auto caption = settings.multiEnabled ? "Up to " + String(limit, 1) + " dB cut per band" : String("Stage off");
+    label(g, theme.font(10.5f), caption, options.withLeft(assistFocusDial.getRight() + 10), muted);
+    for (std::size_t i = 0; i < dsp::bandCount; ++i)
+    {
+        const auto cell = area.removeFromLeft(area.getWidth() / static_cast<int>(dsp::bandCount - i));
+        const auto colour = bandColours[i];
+        if (i == static_cast<std::size_t>(selectedBand))
+        {
+            g.setColour(colour.withAlpha(0.14f));
+            g.fillRoundedRectangle(cell.reduced(2, 2).toFloat(), 4.0f);
+        }
+        label(g, theme.font(10.0f), assistBandNames[i], cell.withHeight(16), muted, Justification::centred);
+        label(g, theme.font(12.0f, true), signedDb(meters.bands[i]), cell.withTrimmedTop(15), colour, Justification::centred);
+    }
 }
 
 void Editor::drawGraphicEq(Graphics& g)
@@ -1523,6 +1659,7 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
     const auto area = spectrumArea();
     const auto rangeArea = area.reduced(0.0f, bandRangeInset);
     const auto zero = rangeArea.getCentreY();
+    const auto rangeDb = boundAssist ? dsp::assistMaxCutDb : dsp::maxRangeDb;
     const auto& stageLevels = meters.stages[dsp::index(Stage::multiband)];
     const auto lane = area.withWidth(spectrumSideWidth);
     drawVerticalMeter(g, "IN", lane.withX(bounds.getX()), dsp::dbFromGain(stageLevels.inputPeak));
@@ -1566,20 +1703,20 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
         const auto x = frequencyToX(span.low);
         const auto end = frequencyToX(span.high);
         const auto colour = bandColours[n];
-        const auto on = settings.multiEnabled && settings.bands[n].dynamics.enabled;
+        const auto on = settings.multiEnabled && (boundAssist || settings.bands[n].dynamics.enabled);
         g.setColour(colour.withAlpha(on ? 0.17f : 0.055f));
         g.fillRect(x, area.getY(), end - x, area.getHeight());
         g.setColour(colour.withAlpha(band == selectedBand ? 0.95f : 0.40f));
         g.drawVerticalLine(roundToInt(x), area.getY(), area.getBottom());
         g.drawVerticalLine(roundToInt(end), area.getY(), area.getBottom());
-        if (band == selectedBand)
+        if (band == selectedBand && !boundAssist)
         {
             for (const auto handle : { x, end })
                 g.fillRoundedRectangle(handle - 3.5f, area.getY() - 12.0f, 7.0f, 13.0f, 2.0f);
         }
         if (on)
         {
-            const auto live = levelToY(rangeArea, meters.bands[n], -dsp::maxRangeDb, dsp::maxRangeDb);
+            const auto live = levelToY(rangeArea, meters.bands[n], -rangeDb, rangeDb);
             g.setColour(colour.withAlpha(0.24f));
             g.fillRect(x, std::min(zero, live), end - x, std::abs(live - zero));
         }
@@ -1589,6 +1726,9 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
     g.drawDashedLine({ area.getX(), zero, area.getRight(), zero }, dashes, 2);
     label(g, theme.font(8.5f, true), "0", { roundToInt(area.getX()) - 8, roundToInt(zero) - 6, 8, 12 },
           muted, Justification::centred);
+
+    if (boundAssist)
+        return;
 
     const auto span = edges(selectedBand);
     const auto selectedColour = bandColours[static_cast<std::size_t>(selectedBand)];
@@ -1609,52 +1749,79 @@ void Editor::drawSpectrum(Graphics& g, Rectangle<float> bounds)
 
 void Editor::drawTonalBalance(Graphics& g, Rectangle<float> bounds)
 {
+    const auto pink = pinkSlope.getToggleState();
     const auto targetId = targetChoice.getSelectedId();
-    const auto captured = targetId == 4 ? processor.tonalReference() : std::nullopt;
+    const auto captured = !pink && targetId == 4 ? processor.tonalReference() : std::nullopt;
     auto count = dsp::tonalBandsAtRate(processor.displayRate());
     if (captured)
         count = std::min(count, captured->bands);
     const auto targetIndex = static_cast<std::size_t>(targetId >= 1 && targetId <= 3 ? targetId - 1 : 0);
-    const auto target = dsp::normalizedTone(captured ? captured->power : dsp::tonalTargets[targetIndex], count);
-    const auto hasFreshSignal = lastTonalFrame > 0.0 && tonalKey == currentTonalKey();
-    const auto live = hasFreshSignal ? dsp::normalizedTone(tonalAverage, count) : dsp::TonalCurve {};
+    const auto matchingTap = tonalKey == currentTonalKey();
+    const auto live = matchingTap && lastTonalFrame > 0.0 ? tonalAverage : dsp::TonalCurve {};
+    const auto& reference = pink ? dsp::pinkTonalTarget : captured ? captured->power : dsp::tonalTargets[targetIndex];
+    const auto target = dsp::levelMatchedTone(reference, live, count);
+    const auto hasSignal = dsp::tonalEnergy(live, 0, count) > 0.0f;
     const auto broad = tonalMode.getSelectedId() == 2;
+    const auto inspect = hasSignal && !broad && tonalHoverBand >= 0 && tonalHoverBand < count;
+    const auto hasLevels = matchingTap && lastTonalLevelFrame > 0.0;
 
-    auto legend = bounds.toNearestInt().reduced(12, 0).withHeight(19);
-    label(g, theme.font(10.0f, true), broad ? "LIVE  /  dB VS TARGET" : "LIVE AVERAGE  /  dB REL",
-          legend.removeFromLeft(150), yellow);
-    const auto* targetLabel = targetId == 4 && !captured ? "BALANCED  +/-4 dB" : "TARGET  +/-4 dB";
-    label(g, theme.font(10.0f, true), targetLabel, legend, bandColours[1], Justification::centredRight);
+    auto legend = bounds.toNearestInt().reduced(10, 0).withHeight(19);
+    const auto* targetLabel = pink ? "PINK REF / LEVEL MATCHED"
+        : targetId == 4 && !captured ? "BALANCED +/-4 dB" : "TARGET +/-4 dB";
+    label(g, theme.font(9.5f, true), targetLabel, legend.removeFromRight(144), bandColours[1], Justification::centredRight);
+    label(g, theme.font(9.5f, true), broad ? (pink ? "dB VS PINK REF" : "dB VS TARGET") : "BAND RMS / dBFS",
+          legend.removeFromLeft(117), yellow);
+    if (hasLevels)
+        label(g, theme.font(10.0f, true), "Tap RMS " + levelReadout(tonalTapLevels.rms)
+              + " / Peak " + levelReadout(tonalTapLevels.peak) + " dBFS", legend, white, Justification::centred);
     if (count > 0)
     {
         if (broad)
             drawBroadTone(g, bounds, target, live, count);
         else
-            drawFineTone(g, bounds, target, live, count);
+            drawFineTone(g, bounds, target, live, count, inspect ? tonalHoverBand : -1, pink);
     }
 
-    if (dsp::tonalEnergy(live) <= 0.0f)
+    auto footer = bounds.toNearestInt().withY(roundToInt(historyBounds().getBottom()) + 1).withHeight(14);
+    if (hasSignal)
     {
-        const auto notice = bounds.withSizeKeepingCentre(176.0f, 22.0f);
+        const auto dominant = std::max_element(live.begin(), live.begin() + count) - live.begin();
+        const auto band = static_cast<std::size_t>(inspect ? tonalHoverBand : dominant);
+        const auto span = frequencySpan(dsp::tonalEdges[band], dsp::tonalEdges[band + 1]);
+        const auto difference = signedDb(dsp::toneDifferenceDb(live[band], target[band]));
+        const auto comparison = pink ? " vs pink" : " vs target";
+        const auto level = live[band] < 1.0e-9f ? String("< -90") : String(dsp::tonalDb(live[band]), 1);
+        const auto detail = span + "  /  " + level + " dBFS RMS  /  " + difference + comparison;
+        label(g, theme.font(10.5f, true), (inspect ? String() : String("Strongest band  ")) + detail,
+              footer, white, Justification::centred);
+    }
+    else
+    {
+        const auto notice = bounds.withSizeKeepingCentre(186.0f, 24.0f);
         g.setColour(graph.withAlpha(0.92f));
         g.fillRoundedRectangle(notice, 3.0f);
-        label(g, theme.font(11.5f, true), count > 0 ? "Waiting for audio at this tap" : "Sample rate below analyzer range",
-              notice.toNearestInt(), muted, Justification::centred);
+        const auto* message = count == 0 ? "Sample rate below analyzer range"
+            : hasLevels && tonalTapLevels.rms < dsp::gainFromDb(static_cast<float>(rtaSensitivity.getValue()) + 3.0f)
+            ? "Below sensitivity floor" : "Waiting for audio at this tap";
+        label(g, theme.font(11.5f, true), message, notice.toNearestInt(), muted, Justification::centred);
+        if (!pink && targetId == 4 && !captured)
+            label(g, theme.font(10.0f), "Play audio and press Capture to save a reference", footer, muted, Justification::centred);
     }
-    const auto footer = bounds.toNearestInt().withY(roundToInt(historyBounds().getBottom()) + 1).withHeight(14);
-    label(g, theme.font(10.0f), targetId == 4 && !captured
-          ? "Play audio and press Capture to save a reference" : "Level-matched spectral balance   /   Move to compare taps",
-          footer, muted, Justification::centred);
 }
 
 void Editor::drawFineTone(Graphics& g, Rectangle<float> bounds, const dsp::TonalCurve& target,
-                         const dsp::TonalCurve& live, int count)
+                         const dsp::TonalCurve& live, int count, int inspectedBand, bool pink)
 {
-    constexpr auto floor = -30.0f;
-    constexpr auto ceiling = 18.0f;
-    const auto area = bounds.withTrimmedLeft(37.0f).withTrimmedRight(16.0f)
-        .withTrimmedTop(21.0f).withTrimmedBottom(23.0f);
-    for (const auto db : { -30, -24, -12, 0, 12, 18 })
+    constexpr auto floor = -90.0f;
+    constexpr auto ceiling = 6.0f;
+    const auto area = tonalFineArea();
+    const auto bandWidth = area.getWidth() / dsp::tonalBandCount;
+    if (inspectedBand >= 0)
+    {
+        g.setColour(white.withAlpha(0.08f));
+        g.fillRect(area.withX(area.getX() + bandWidth * static_cast<float>(inspectedBand)).withWidth(bandWidth));
+    }
+    for (const auto db : { -90, -75, -60, -45, -30, -15, 0 })
     {
         const auto y = roundToInt(levelToY(area, static_cast<float>(db), floor, ceiling));
         g.setColour(db == 0 ? edge : panel);
@@ -1674,30 +1841,45 @@ void Editor::drawFineTone(Graphics& g, Rectangle<float> bounds, const dsp::Tonal
 
     const auto point = [&](const dsp::TonalCurve& curve, int band, float offset)
     {
-        const auto fraction = (static_cast<float>(band) + 0.5f) / dsp::tonalBandCount;
-        const auto db = dsp::tonalDb(curve[static_cast<std::size_t>(band)] * static_cast<float>(count)) + offset;
-        return Point<float>(area.getX() + fraction * area.getWidth(), levelToY(area, db, floor, ceiling));
+        const auto x = area.getX() + (static_cast<float>(band) + 0.5f) * bandWidth;
+        const auto db = dsp::tonalDb(curve[static_cast<std::size_t>(band)]) + offset;
+        return Point<float>(x, levelToY(area, db, floor, ceiling));
     };
-    Path corridor;
-    corridor.startNewSubPath(point(target, 0, tonalTolerance));
-    for (int band = 1; band < count; ++band)
-        corridor.lineTo(point(target, band, tonalTolerance));
-    for (int band = count - 1; band >= 0; --band)
-        corridor.lineTo(point(target, band, -tonalTolerance));
-    corridor.closeSubPath();
-    g.setColour(bandColours[1].withAlpha(0.21f));
-    g.fillPath(corridor);
-    g.setColour(bandColours[1].withAlpha(0.60f));
-    g.strokePath(corridor, PathStrokeType(1.0f));
 
-    if (dsp::tonalEnergy(live) > 0.0f)
+    if (dsp::tonalEnergy(live, 0, count) <= 0.0f)
+        return;
+    if (pink)
     {
-        Path trace;
-        trace.startNewSubPath(point(live, 0, 0.0f));
+        const auto y = point(target, 0, 0.0f).y;
+        constexpr float dashes[] { 5.0f, 3.0f };
+        g.setColour(bandColours[1]);
+        g.drawDashedLine({ area.getX(), y, area.getX() + bandWidth * static_cast<float>(count), y }, dashes, 2);
+    }
+    else
+    {
+        Path corridor;
+        corridor.startNewSubPath(point(target, 0, tonalTolerance));
         for (int band = 1; band < count; ++band)
-            trace.lineTo(point(live, band, 0.0f));
-        g.setColour(yellow);
-        g.strokePath(trace, PathStrokeType(1.8f, PathStrokeType::curved, PathStrokeType::rounded));
+            corridor.lineTo(point(target, band, tonalTolerance));
+        for (int band = count - 1; band >= 0; --band)
+            corridor.lineTo(point(target, band, -tonalTolerance));
+        corridor.closeSubPath();
+        g.setColour(bandColours[1].withAlpha(0.21f));
+        g.fillPath(corridor);
+        g.setColour(bandColours[1].withAlpha(0.60f));
+        g.strokePath(corridor, PathStrokeType(1.0f));
+    }
+
+    Path trace;
+    trace.startNewSubPath(point(live, 0, 0.0f));
+    for (int band = 1; band < count; ++band)
+        trace.lineTo(point(live, band, 0.0f));
+    g.setColour(yellow);
+    g.strokePath(trace, PathStrokeType(1.8f, PathStrokeType::curved, PathStrokeType::rounded));
+    if (inspectedBand >= 0)
+    {
+        const auto marker = point(live, inspectedBand, 0.0f);
+        g.fillEllipse(Rectangle<float>(6.0f, 6.0f).withCentre(marker));
     }
 }
 
@@ -1708,8 +1890,8 @@ void Editor::drawBroadTone(Graphics& g, Rectangle<float> bounds, const dsp::Tona
     constexpr std::array<const char*, 4> names { "LOW", "LOW MID", "HIGH MID", "HIGH" };
     constexpr float scale = 18.0f;
     auto area = bounds.withTrimmedLeft(37.0f).withTrimmedRight(14.0f)
-        .withTrimmedTop(38.0f).withTrimmedBottom(25.0f);
-    const auto hasSignal = dsp::tonalEnergy(live) > 0.0f;
+        .withTrimmedTop(47.0f).withTrimmedBottom(23.0f);
+    const auto hasSignal = dsp::tonalEnergy(live, 0, count) > 0.0f;
     for (const auto db : { -18, -12, -6, 0, 6, 12, 18 })
     {
         const auto y = roundToInt(levelToY(area, static_cast<float>(db), -scale, scale));
@@ -1724,10 +1906,13 @@ void Editor::drawBroadTone(Graphics& g, Rectangle<float> bounds, const dsp::Tona
         const auto column = area.removeFromLeft(width).reduced(4.0f, 0.0f);
         const auto first = boundaries[i];
         const auto end = std::min(count, boundaries[i + 1]);
-        label(g, theme.font(10.5f, true), names[i], column.withY(column.getY() - 17.0f).withHeight(16.0f).toNearestInt(),
+        label(g, theme.font(10.5f, true), names[i], column.withY(column.getY() - 28.0f).withHeight(14.0f).toNearestInt(),
               muted, Justification::centred);
         if (first >= end)
             continue;
+        label(g, theme.font(9.5f), frequencySpan(dsp::tonalEdges[static_cast<std::size_t>(first)],
+                                                 dsp::tonalEdges[static_cast<std::size_t>(end)]),
+              column.withY(column.getY() - 15.0f).withHeight(13.0f).toNearestInt(), muted, Justification::centred);
         const auto top = levelToY(column, tonalTolerance, -scale, scale);
         const auto bottom = levelToY(column, -tonalTolerance, -scale, scale);
         const auto range = column.withTop(top).withBottom(bottom);
@@ -1737,9 +1922,11 @@ void Editor::drawBroadTone(Graphics& g, Rectangle<float> bounds, const dsp::Tona
         g.drawRoundedRectangle(range, 2.0f, 1.0f);
         if (hasSignal)
         {
-            const auto db = dsp::tonalDb(dsp::tonalEnergy(live, first, end))
-                - dsp::tonalDb(dsp::tonalEnergy(target, first, end));
+            const auto db = dsp::toneDifferenceDb(dsp::tonalEnergy(live, first, end), dsp::tonalEnergy(target, first, end));
             const auto y = levelToY(column, db, -scale, scale);
+            const auto zero = column.getCentreY();
+            g.setColour(yellow.withAlpha(0.22f));
+            g.fillRect(column.getCentreX() - 13.0f, std::min(y, zero), 26.0f, std::abs(y - zero));
             g.setColour(yellow);
             g.fillRoundedRectangle(column.getCentreX() - 13.0f, y - 2.5f, 26.0f, 5.0f, 2.0f);
             label(g, theme.font(11.0f, true), signedDb(db),
@@ -1791,13 +1978,17 @@ void Editor::updateTonalSpectrum()
     {
         tonalKey = key;
         lastTonalFrame = 0.0;
+        lastTonalLevelFrame = 0.0;
     }
 
+    const auto pink = pinkSlope.getToggleState();
+    targetChoice.setEnabled(!pink);
     const auto now = Time::getMillisecondCounterHiRes();
     if (processor.readSpectrum(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize, key))
     {
-        if (!dsp::tonalAboveFloor(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize,
-                                 static_cast<float>(rtaSensitivity.getValue()), lastTonalFrame > 0.0))
+        tonalTapLevels = dsp::spectrumLevels(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize);
+        lastTonalLevelFrame = now;
+        if (!dsp::tonalAboveFloor(tonalTapLevels, static_cast<float>(rtaSensitivity.getValue()), lastTonalFrame > 0.0))
         {
             lastTonalFrame = 0.0;
             captureReference.setEnabled(false);
@@ -1812,7 +2003,7 @@ void Editor::updateTonalSpectrum()
             const auto retained = lastTonalFrame > 0.0
                 ? static_cast<float>(std::exp(-(now - lastTonalFrame) / 900.0)) : 0.0f;
             for (std::size_t i = 0; i < power.size(); ++i)
-                tonalAverage[i] = retained * tonalAverage[i] + (1.0f - retained) * power[i];
+                tonalAverage[i] = retained * tonalAverage[i] + (1.0f - retained) * power[i] * dsp::hannPowerToMeanSquare;
             lastTonalFrame = now;
         }
         else
@@ -1820,11 +2011,12 @@ void Editor::updateTonalSpectrum()
             lastTonalFrame = 0.0;
         }
     }
-    else if (now - lastTonalFrame > 650.0)
+    else if (now - lastTonalLevelFrame > 650.0)
     {
         lastTonalFrame = 0.0;
+        lastTonalLevelFrame = 0.0;
     }
-    captureReference.setEnabled(lastTonalFrame > 0.0);
+    captureReference.setEnabled(!pink && lastTonalFrame > 0.0);
 }
 
 void Editor::updateGeqSpectrum()
@@ -1849,7 +2041,7 @@ void Editor::updateGeqSpectrum()
             clear();
         return;
     }
-    if (!dsp::tonalAboveFloor(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize,
+    if (!dsp::tonalAboveFloor(dsp::spectrumLevels(tonalBuffer[0].data(), tonalBuffer[1].data(), Processor::tonalFftSize),
                              static_cast<float>(rtaSensitivity.getValue()), lastGeqFrame > 0.0))
     {
         clear();
@@ -1862,7 +2054,7 @@ void Editor::updateGeqSpectrum()
     for (std::size_t i = 0; i < geqSpectrum.size(); ++i)
     {
         // Convert the one-sided Hann-windowed FFT power to RMS dBFS.
-        const auto db = dsp::tonalDb(power[i] * (16.0f / 3.0f));
+        const auto db = dsp::tonalDb(power[i] * dsp::hannPowerToMeanSquare);
         geqSpectrum[i] = std::clamp(std::max(db, geqSpectrum[i] - fall), geqRtaMinDb, 0.0f);
     }
     lastGeqFrame = now;
@@ -1924,7 +2116,9 @@ void Editor::timerCallback()
 {
     const auto previous = order;
     applyOrder();
-    if (!tonalSelected() && selected == Stage::compressor && boundCompressorMode != settings.compressorMode)
+    if (!tonalSelected()
+        && ((selected == Stage::compressor && boundCompressorMode != settings.compressorMode)
+            || (selected == Stage::multiband && boundAssist != settings.assist.enabled)))
         bindControls();
     if (order != previous)
         resized();
@@ -1945,7 +2139,8 @@ void Editor::timerCallback()
     }
     else if (selected == Stage::multiband)
     {
-        refreshBandControls();
+        if (!boundAssist)
+            refreshBandControls();
         updateSpectrum();
     }
     else if (geqSelected())
@@ -1991,6 +2186,9 @@ std::optional<Editor::GraphHit> Editor::graphHit(Point<float> position) const
         return {};
     }
 
+    if (settings.assist.enabled)
+        return {};
+
     const auto area = spectrumArea();
     if (position.y >= area.getY() - 14.0f && position.y < area.getY() + 2.0f)
     {
@@ -2019,6 +2217,15 @@ std::optional<Editor::GraphHit> Editor::graphHit(Point<float> position) const
 
 void Editor::mouseMove(const MouseEvent& event)
 {
+    if (tonalSelected())
+    {
+        const auto area = tonalFineArea();
+        const auto inspect = tonalMode.getSelectedId() != 2 && area.contains(event.position);
+        tonalHoverBand = inspect ? static_cast<int>(dsp::tonalBandCount * (event.position.x - area.getX()) / area.getWidth()) : -1;
+        setMouseCursor(inspect ? MouseCursor::CrosshairCursor : MouseCursor::NormalCursor);
+        repaint();
+        return;
+    }
     const auto hit = graphHit(event.position);
     auto graphCursor = MouseCursor::NormalCursor;
     if (hit)
@@ -2029,6 +2236,15 @@ void Editor::mouseMove(const MouseEvent& event)
         graphCursor = horizontal ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor;
     }
     setMouseCursor(graphCursor);
+}
+
+void Editor::mouseExit(const MouseEvent&)
+{
+    if (tonalHoverBand >= 0)
+    {
+        tonalHoverBand = -1;
+        repaint();
+    }
 }
 
 void Editor::mouseDown(const MouseEvent& event)

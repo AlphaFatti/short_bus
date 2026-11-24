@@ -20,7 +20,8 @@ bool presetIncludesParameter(PresetScope scope, const String& id)
         case PresetScope::multiband: return id.startsWith("multi_") || id.startsWith("band");
         case PresetScope::compressor: return id.startsWith("comp_");
         case PresetScope::limiter: return id.startsWith("limit_");
-        case PresetScope::rta: return id == param::rtaTarget || id == param::rtaView || id == param::rtaFloor;
+        case PresetScope::rta: return id == param::rtaTarget || id == param::rtaView
+                                   || id == param::rtaFloor || id == param::rtaPink;
         case PresetScope::bus: return true;
         case PresetScope::geq: return id.startsWith("geq_");
     }

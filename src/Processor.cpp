@@ -35,8 +35,12 @@ void restoreMissingPresetParameters(AudioProcessorValueTreeState& state, ValueTr
     if (scope == PresetScope::bus || scope == PresetScope::compressor)
         for (const auto* id : compressorCharacterParameters)
             restoreMissingParameter(state, restored, id);
+    if (scope == PresetScope::bus || scope == PresetScope::multiband)
+        for (const auto* id : { param::multiAssist, param::assistProfile, param::assistFocus })
+            restoreMissingParameter(state, restored, id);
     if (scope == PresetScope::bus || scope == PresetScope::rta)
-        restoreMissingParameter(state, restored, param::rtaFloor);
+        for (const auto* id : { param::rtaFloor, param::rtaPink })
+            restoreMissingParameter(state, restored, id);
     if (scope == PresetScope::bus || scope == PresetScope::geq)
     {
         restoreMissingParameter(state, restored, param::geqEnabled);
@@ -183,6 +187,11 @@ AudioProcessorValueTreeState::ParameterLayout Processor::makeLayout()
         StringArray { "Before limiter", "First", "Second", "Third", "Fourth", "Fifth" }, 0));
     addToggle(layout, param::rtaAfterGeq, "RTA After GEQ At Shared Position", true);
     addToggle(layout, param::limitAdaptive, "Limiter Adaptive Release", true);
+    addToggle(layout, param::multiAssist, "5-Band Assist", false);
+    layout.add(std::make_unique<AudioParameterChoice>(ParameterID { param::assistProfile, 1 }, "5-Band Assist Profile",
+        StringArray { "Speech", "Music" }, 0));
+    addFloat(layout, param::assistFocus, "5-Band Assist Focus", { 0.0f, 100.0f, 1.0f }, dsp::defaultAssistFocus);
+    addToggle(layout, param::rtaPink, "RTA Pink Slope", false);
     return layout;
 }
 
@@ -215,6 +224,9 @@ Processor::Processor()
     fetRelease = state.getRawParameterValue(param::fetRelease);
     bypass = state.getRawParameterValue(param::bypass);
     multiOn = state.getRawParameterValue(param::id(param::multi, "enabled"));
+    assistOn = state.getRawParameterValue(param::multiAssist);
+    assistProfile = state.getRawParameterValue(param::assistProfile);
+    assistFocus = state.getRawParameterValue(param::assistFocus);
     limitOn = state.getRawParameterValue(param::id(param::limit, "enabled"));
     ceiling = state.getRawParameterValue(param::id(param::limit, "ceiling"));
     drive = state.getRawParameterValue(param::id(param::limit, "drive"));
@@ -252,6 +264,9 @@ dsp::Settings Processor::currentSettings() const
     settings.optoTiming = { read(optoAttack), read(optoRelease) };
     settings.fetTiming = { read(fetAttack), read(fetRelease) };
     settings.multiEnabled = read(multiOn) > 0.5f;
+    settings.assist = { read(assistOn) > 0.5f,
+                        read(assistProfile) > 0.5f ? dsp::AssistProfile::music : dsp::AssistProfile::speech,
+                        read(assistFocus) };
     for (std::size_t i = 0; i < bandRefs.size(); ++i)
     {
         const auto& refs = bandRefs[i];
@@ -387,6 +402,20 @@ Result Processor::applyPreset(const ValueTree& preset, PresetScope scope)
     if ((scope == PresetScope::bus || scope == PresetScope::rta) && (safeMask & rtaRecallSafe) == 0)
         setTonalReference(captured);
     return Result::ok();
+}
+
+Result Processor::resetStage(PresetScope scope)
+{
+    if (scope == PresetScope::bus)
+        return Result::fail("Select a stage to reset.");
+
+    ValueTree defaults { state.state.getType() };
+    for (auto* parameter : getParameters())
+        if (auto* ranged = dynamic_cast<RangedAudioParameter*>(parameter))
+            if (presetIncludesParameter(scope, ranged->getParameterID()))
+                restoreMissingParameter(state, defaults, ranged->getParameterID());
+
+    return applyPreset(defaults, scope);
 }
 
 void Processor::setRoute(const dsp::Order& requested, int tap)

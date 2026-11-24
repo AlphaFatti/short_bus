@@ -24,6 +24,103 @@ void set(Processor& processor, const String& id, float value)
 }
 
 bool near(float a, float b) { return std::abs(a - b) < 0.001f; }
+
+void assistAndStageResets(Processor& processor)
+{
+    const auto parameterValue = [&processor](const char* id)
+    {
+        return processor.state.getRawParameterValue(id)->load();
+    };
+    set(processor, param::multiAssist, 1.0f);
+    set(processor, param::assistProfile, 1.0f);
+    set(processor, param::assistFocus, 72.0f);
+    set(processor, "band2_threshold", -36.0f);
+    const auto assistPreset = processor.presetState(PresetScope::multiband);
+    auto oldAssistPreset = assistPreset.createCopy();
+    constexpr std::array assistIds { param::multiAssist, param::assistProfile, param::assistFocus };
+    for (const auto* id : assistIds)
+        oldAssistPreset.removeChild(oldAssistPreset.getChildWithProperty("id", id), nullptr);
+    require(processor.applyPreset(oldAssistPreset, PresetScope::multiband).wasOk()
+            && !processor.currentSettings().assist.enabled
+            && near(processor.currentSettings().assist.focus, dsp::defaultAssistFocus),
+            "older 5-Band presets load manual mode and default Focus");
+    require(processor.applyPreset(assistPreset, PresetScope::multiband).wasOk()
+            && processor.currentSettings().assist.enabled
+            && processor.currentSettings().assist.profile == dsp::AssistProfile::music
+            && near(processor.currentSettings().assist.focus, 72.0f)
+            && near(processor.currentSettings().bands[1].dynamics.threshold, -36.0f), "Assist preset saves manual and Assist settings");
+
+    set(processor, param::rtaPink, 1.0f);
+    set(processor, param::rtaView, 1.0f);
+    const auto rtaPreset = processor.presetState(PresetScope::rta);
+    auto oldRtaPreset = rtaPreset.createCopy();
+    oldRtaPreset.removeChild(oldRtaPreset.getChildWithProperty("id", param::rtaPink), nullptr);
+    require(processor.applyPreset(oldRtaPreset, PresetScope::rta).wasOk()
+            && parameterValue(param::rtaPink) < 0.5f && parameterValue(param::rtaView) > 0.5f,
+            "older RTA presets keep Broad and receive the original target display");
+    require(processor.applyPreset(rtaPreset, PresetScope::rta).wasOk() && parameterValue(param::rtaPink) > 0.5f,
+            "RTA presets recall Pink Slope");
+
+    const auto assistBus = processor.presetState(PresetScope::bus);
+    set(processor, param::multiAssist, 0.0f);
+    set(processor, param::rtaPink, 0.0f);
+    processor.setPresetRecallSafes((1u << dsp::index(dsp::Stage::multiband)) | rtaRecallSafe);
+    require(processor.applyPreset(assistBus, PresetScope::bus).wasOk() && !processor.currentSettings().assist.enabled
+            && parameterValue(param::rtaPink) < 0.5f, "5-Band and RTA recall safes protect their new settings");
+    processor.setPresetRecallSafes(0);
+    require(processor.applyPreset(assistBus, PresetScope::bus).wasOk() && processor.currentSettings().assist.enabled
+            && parameterValue(param::rtaPink) > 0.5f, "Bus preset recalls Assist and Pink Slope");
+
+    MemoryBlock hostState;
+    processor.getStateInformation(hostState);
+    auto older = ValueTree::fromXml(*AudioProcessor::getXmlFromBinary(hostState.getData(), static_cast<int>(hostState.getSize())));
+    for (const auto* id : assistIds)
+        older.removeChild(older.getChildWithProperty("id", id), nullptr);
+    older.removeChild(older.getChildWithProperty("id", param::rtaPink), nullptr);
+    AudioProcessor::copyXmlToBinary(*older.createXml(), hostState);
+    processor.setStateInformation(hostState.getData(), static_cast<int>(hostState.getSize()));
+    require(!processor.currentSettings().assist.enabled && parameterValue(param::rtaPink) < 0.5f
+            && parameterValue(param::rtaView) > 0.5f, "older sessions receive compatible defaults");
+    require(processor.applyPreset(assistBus, PresetScope::bus).wasOk(), "restore current Bus settings");
+
+    const Processor::TileOrder route { 1, 4, 2, 5, 0, 3 };
+    processor.setTileOrder(route);
+    processor.setPresetRecallSafes(defaultPresetSafes | geqRecallSafe | rtaRecallSafe);
+    const auto safes = processor.presetRecallSafes();
+    const auto tap = processor.rtaPosition();
+    set(processor, param::bypass, 1.0f);
+    set(processor, "low_enabled", 1.0f);
+    set(processor, "low_threshold", -55.0f);
+    set(processor, "multi_enabled", 1.0f);
+    set(processor, param::compMode, 2.0f);
+    set(processor, param::fetAttack, 0.03f);
+    set(processor, param::limitAdaptive, 0.0f);
+    set(processor, param::geqGain(17), 7.0f);
+    set(processor, param::saturation, 65.0f);
+    set(processor, param::rtaFloor, -50.0f);
+    processor.setTonalReference(dsp::TonalReference { dsp::tonalTargets[2], dsp::tonalBandCount });
+    constexpr std::array scopes { PresetScope::lowLevel, PresetScope::multiband, PresetScope::compressor,
+                                 PresetScope::limiter, PresetScope::geq, PresetScope::rta };
+    for (const auto scope : scopes)
+    {
+        const auto before = processor.presetState(PresetScope::bus);
+        require(processor.resetStage(scope).wasOk(), "reset each stage");
+        const auto after = processor.presetState(PresetScope::bus);
+        for (const auto& child : after)
+        {
+            const auto id = child.getProperty("id").toString();
+            auto* parameter = processor.state.getParameter(id);
+            const auto expected = presetIncludesParameter(scope, id)
+                ? parameter->convertFrom0to1(parameter->getDefaultValue())
+                : static_cast<float>(before.getChildWithProperty("id", id).getProperty("value"));
+            require(near(static_cast<float>(child.getProperty("value")), expected), "reset restores only the stage's factory values");
+        }
+        require(processor.tileOrder() == route && processor.rtaPosition() == tap
+                && processor.currentSettings().bypass && processor.presetRecallSafes() == safes,
+                "reset preserves routing, bypass and recall safes");
+        require(processor.tonalReference().has_value() == (scope != PresetScope::rta), "only RTA reset clears its capture");
+    }
+}
 }
 
 int main()
@@ -210,5 +307,6 @@ int main()
     set(*processor, param::limitAdaptive, 0.0f);
     processor->setStateInformation(hostState.getData(), static_cast<int>(hostState.getSize()));
     require(processor->currentSettings().limiter.adaptive, "older host sessions receive adaptive recovery");
+    assistAndStageResets(*processor);
     std::cout << "Preset files, scopes, safes, validation and tile orders passed\n";
 }

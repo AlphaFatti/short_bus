@@ -3,6 +3,7 @@
 
 #include "Compressor.h"
 #include "GraphicEq.h"
+#include "Multiband.h"
 
 namespace shortbus::dsp
 {
@@ -83,7 +84,7 @@ private:
         float sampleRate = 48000.0f;
         Broadband lowLevel;
         Compressor compressor;
-        std::array<Band, bandCount> bands;
+        Multiband multiband;
         Limiter limiter;
         GraphicEq geq;
         std::array<StageMetering, stageCount> stageMeters {};
